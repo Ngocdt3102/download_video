@@ -86,62 +86,38 @@ def extract_info():
 
 @app.route('/api/download-progress', methods=['POST'])
 def download_progress():
-    url = None
-    format_id = 'best'
+    # 1. Bắt dữ liệu cực kỳ an toàn từ Form (Giống hệt extract-info)
+    url = request.form.get('url')
+    format_id = request.form.get('format_id', 'best')
 
-    try:
-        if request.data:
-            import json
-            raw_body = request.data.decode('utf-8')
-            parsed_data = json.loads(raw_body)
-            url = parsed_data.get('url')
-            raw_fmt = parsed_data.get('format_id')
-            if raw_fmt and raw_fmt != 'undefined' and raw_fmt != 'null':
-                format_id = str(raw_fmt)
-    except Exception:
-        pass
-
+    # Dự phòng nếu gửi bằng JSON
     if not url and request.is_json:
-        req_data = request.get_json(silent=True)
-        if req_data and isinstance(req_data, dict):
-            url = req_data.get('url')
-            raw_fmt = req_data.get('format_id')
-            if raw_fmt and raw_fmt != 'undefined' and raw_fmt != 'null':
-                format_id = str(raw_fmt)
-
-    if not url and request.form:
-        url = request.form.get('url')
-        raw_fmt = request.form.get('format_id')
-        if raw_fmt and raw_fmt != 'undefined' and raw_fmt != 'null':
-            format_id = str(raw_fmt)
+        req_data = request.get_json(silent=True) or {}
+        url = req_data.get('url')
+        format_id = req_data.get('format_id', 'best')
 
     if not url:
         return jsonify({"error": "Thiếu URL video"}), 400
-
-    # Cơ chế chọn format thông minh: nếu là mã cụ thể, ép gộp video + audio tốt nhất. Nếu lỗi, fallback về 'best'
-    if format_id and format_id != 'best':
-        ydl_format = f"{format_id}+bestaudio/best/best"
-    else:
-        ydl_format = 'best'
 
     def generate_logs():
         yield f"data: [LOG] Bắt đầu kết nối tới hệ thống xử lý...\n\n"
         time.sleep(0.5)
         yield f"data: [LOG] Đang phân tích liên kết: {url}\n\n"
         
-        # Kiểm tra sự tồn tại của ffmpeg trên hệ thống
+        # Kiểm tra sự tồn tại của ffmpeg
         ffmpeg_path = shutil.which('ffmpeg')
         if not ffmpeg_path:
-            yield f"data: [LOG] CẢNH BÁO: Không tìm thấy FFmpeg trên hệ thống. Đang chuyển sang chế độ tải trực tiếp...\n\n"
+            yield f"data: [LOG] CẢNH BÁO: Không tìm thấy FFmpeg, chuyển sang tải trực tiếp...\n\n"
             ydl_format = 'best'
         else:
             yield f"data: [LOG] Đã phát hiện công cụ xử lý FFmpeg: {ffmpeg_path}\n\n"
-            ydl_format = f"{format_id}+bestaudio/best"
+            ydl_format = f"{format_id}+bestaudio/best" if format_id != 'best' else 'best'
 
         ydl_opts = {
             'format': ydl_format,
             'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
-            'progress_hooks': [lambda d: None], # Có thể tuỳ biến hook log ở đây
+            'quiet': True,
+            'no_warnings': True
         }
 
         yield f"data: [LOG] Bắt đầu tải phần video và âm thanh...\n\n"
@@ -150,7 +126,6 @@ def download_progress():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 yield f"data: [LOG] Đang tiến hành tải xuống và đồng bộ hóa dữ liệu...\n\n"
                 info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
                 
             yield f"data: [LOG] Đang thực hiện ghép nối (muxing) video hoàn chỉnh...\n\n"
             time.sleep(1)
