@@ -89,31 +89,40 @@ def download_progress():
     url = None
     format_id = 'best'
 
-    # 1. Thử đọc từ JSON thô (raw bytes) trước tiên để tránh lỗi header proxy
     try:
         if request.data:
             import json
             raw_body = request.data.decode('utf-8')
             parsed_data = json.loads(raw_body)
             url = parsed_data.get('url')
-            format_id = parsed_data.get('format_id', 'best')
+            raw_fmt = parsed_data.get('format_id')
+            if raw_fmt and raw_fmt != 'undefined' and raw_fmt != 'null':
+                format_id = str(raw_fmt)
     except Exception:
         pass
 
-    # 2. Dự phòng đọc bằng request.get_json chuẩn của Flask
     if not url and request.is_json:
         req_data = request.get_json(silent=True)
         if req_data and isinstance(req_data, dict):
             url = req_data.get('url')
-            format_id = req_data.get('format_id', 'best')
+            raw_fmt = req_data.get('format_id')
+            if raw_fmt and raw_fmt != 'undefined' and raw_fmt != 'null':
+                format_id = str(raw_fmt)
 
-    # 3. Dự phòng cuối cùng đọc từ form-data
     if not url and request.form:
         url = request.form.get('url')
-        format_id = request.form.get('format_id', 'best')
+        raw_fmt = request.form.get('format_id')
+        if raw_fmt and raw_fmt != 'undefined' and raw_fmt != 'null':
+            format_id = str(raw_fmt)
 
     if not url:
         return jsonify({"error": "Thiếu URL video"}), 400
+
+    # Cơ chế chọn format thông minh: nếu là mã cụ thể, ép gộp video + audio tốt nhất. Nếu lỗi, fallback về 'best'
+    if format_id and format_id != 'best':
+        ydl_format = f"{format_id}+bestaudio/best/best"
+    else:
+        ydl_format = 'best'
 
     def generate_logs():
         yield f"data: [LOG] Bắt đầu kết nối tới hệ thống xử lý...\n\n"
