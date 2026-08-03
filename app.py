@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import yt_dlp
+import os
 
 app = Flask(__name__)
 CORS(app)
@@ -16,8 +17,9 @@ def extract_info():
     if not url:
         return jsonify({"error": "Vui lòng cung cấp URL video"}), 400
 
+    # Cấu hình yt-dlp ưu tiên gộp hình và tiếng (yêu cầu môi trường có ffmpeg)
     ydl_opts = {
-        'format': 'best',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'quiet': True,
         'no_warnings': True,
         'skip_download': True
@@ -36,8 +38,8 @@ def extract_info():
             }
 
             formats_list = info.get('formats', [])
-            video_dict = {} 
-            audio_list = []
+            video_dict = {}
+            audio_formats = []
 
             for f in formats_list:
                 if not f.get('url'):
@@ -48,49 +50,38 @@ def extract_info():
                 ext = f.get('ext', 'mp4')
                 height = f.get('height')
 
-                # 1. Thu thập danh sách Audio riêng biệt
+                # Lọc audio riêng lẻ chất lượng cao
                 if vcodec == 'none' and acodec != 'none':
-                    audio_list.append({
-                        "format_id": f.get('format_id'),
-                        "resolution": "Audio Only (HQ)",
-                        "ext": ext if ext in ['mp3', 'm4a', 'webm'] else 'm4a',
+                    audio_formats.append({
                         "url": f.get('url'),
-                        "filesize": f.get('filesize'),
+                        "ext": ext if ext in ['mp3', 'm4a', 'webm'] else 'm4a',
                         "quality": f.get('tbr', 0) or 0
                     })
                     continue
 
-                # 2. Thu thập danh sách Video
-                if vcodec != 'none' and height:
-                    res_key = height
-                    # Tính điểm ưu tiên: ưu tiên đuôi mp4 và định dạng có sẵn cả âm thanh
-                    score = 0
-                    if ext == 'mp4':
-                        score += 2
-                    if acodec != 'none':
-                        score += 5
-                    
-                    if res_key not in video_dict or score > video_dict[res_key]['score']:
-                        video_dict[res_key] = {
+                # Lọc các luồng video có độ phân giải chuẩn
+                if vcodec != 'none' and height and ext == 'mp4':
+                    if height not in video_dict:
+                        video_dict[height] = {
                             "format_id": f.get('format_id'),
                             "resolution": f"{height}p",
-                            "ext": ext,
-                            "url": f.get('url'),
+                            "ext": 'mp4',
+                            "url": f.get('url'), # Link video thô (hoặc link kết hợp nếu có)
                             "filesize": f.get('filesize'),
                             "height": height,
-                            "score": score
+                            "has_audio": acodec != 'none' # Kiểm tra xem luồng này đã có sẵn tiếng chưa
                         }
 
-            # Sắp xếp các độ phân giải video từ cao xuống thấp (VD: 1080p -> 720p -> 480p...)
             sorted_videos = sorted(video_dict.values(), key=lambda x: x['height'], reverse=True)
-
             final_formats = []
 
-            # Đưa toàn bộ option video lên đầu và gắn nhãn Recommend cho option sắc nét nhất (phần tử đầu tiên)
             for idx, v in enumerate(sorted_videos):
                 label = v['resolution']
+                if not v['has_audio']:
+                    label += " (Full HD/HD)"  # Đánh dấu các bản cần gộp hoặc bản tiêu chuẩn
+                
                 if idx == 0:
-                    label += " ⭐ (Recommend)" # Gắn nhãn đề xuất cho chất lượng cao nhất
+                    label += " ⭐ (Recommend)"
 
                 final_formats.append({
                     "format_id": v['format_id'],
@@ -100,21 +91,21 @@ def extract_info():
                     "filesize": v['filesize']
                 })
 
-            # Đưa option Audio xuống dưới cùng (vì ưu tiên video)
-            if audio_list:
-                best_audio = max(audio_list, key=lambda x: x['quality'])
+            # Thêm option Audio Only ở cuối
+            if audio_formats:
+                best_audio = max(audio_formats, key=lambda x: x['quality'])
                 final_formats.append({
-                    "format_id": best_audio['format_id'],
-                    "resolution": best_audio['resolution'],
+                    "format_id": "audio_hq",
+                    "resolution": "Audio Only (HQ)",
                     "ext": best_audio['ext'],
                     "url": best_audio['url'],
-                    "filesize": best_audio['filesize']
+                    "filesize": None
                 })
 
             response_data["formats"] = final_formats
 
             if not response_data["formats"]:
-                return jsonify({"error": "Không tìm thấy định dạng tải xuống phù hợp cho liên kết này."}), 400
+                return jsonify({"error": "Không tìm thấy định dạng tải xuống phù hợp."}), 400
 
             return jsonify(response_data), 200
 
