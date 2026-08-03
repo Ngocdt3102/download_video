@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 import yt_dlp
 import os
@@ -84,6 +84,12 @@ def extract_info():
         return jsonify({"error": f"Không thể phân tích video: {str(e)}"}), 500
 
 
+# --- ROUTE MỚI: Phục vụ việc gửi file từ máy chủ về trình duyệt người dùng ---
+@app.route('/api/download-file/<path:filename>', methods=['GET'])
+def download_file(filename):
+    return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
+
+
 @app.route('/api/download-progress', methods=['POST'])
 def download_progress():
     # 1. Bắt dữ liệu cực kỳ an toàn từ Form (Giống hệt extract-info)
@@ -127,11 +133,17 @@ def download_progress():
                 yield f"data: [LOG] Đang tiến hành tải xuống và đồng bộ hóa dữ liệu...\n\n"
                 info = ydl.extract_info(url, download=True)
                 
+                # --- ĐIỂM QUAN TRỌNG: Lấy tên file thực tế sau khi tải xong ---
+                filename = ydl.prepare_filename(info)
+                base_filename = os.path.basename(filename)
+                
             yield f"data: [LOG] Đang thực hiện ghép nối (muxing) video hoàn chỉnh...\n\n"
             time.sleep(1)
             yield f"data: [LOG] Đóng gói tệp tin thành công!\n\n"
             yield f"data: [PROGRESS] 100\n\n"
-            yield f"data: [SUCCESS] Hoàn tất quá trình xử lý!\n\n"
+            
+            # --- ĐIỂM QUAN TRỌNG: Gửi tên file về Frontend qua thẻ SUCCESS ---
+            yield f"data: [SUCCESS] {base_filename}\n\n"
 
         except Exception as e:
             yield f"data: [LOG] LỖI TRONG QUÁ TRÌNH TẢI: {str(e)}\n\n"
