@@ -437,9 +437,10 @@
                     const isAudio = f.resolution.includes('Audio');
                     const icon = isAudio ? 'fa-headphones-simple text-teal' : 'fa-clapperboard text-goldSoft';
 
+                    // Dùng thẻ button gọi hàm startDownloadProcess thay vì thẻ a href
                     const btnHTML = `
-                        <a href="${f.url}" target="_blank" download
-                        class="btn-row rounded-xl px-4 py-3.5 flex justify-between items-center group">
+                        <button type="button" onclick="startDownloadProcess('${videoUrl}', '${f.format_id || f.resolution}')"
+                        class="w-full btn-row rounded-xl px-4 py-3.5 flex justify-between items-center group text-left cursor-pointer">
                             <div class="flex items-center gap-3">
                                 <div class="w-8 h-8 rounded-lg bg-white/[0.03] flex items-center justify-center">
                                     <i class="fa-solid ${icon} text-sm"></i>
@@ -450,7 +451,7 @@
                                 </div>
                             </div>
                             <i class="fa-solid fa-cloud-arrow-down text-[#565A64] group-hover:text-gold transition-colors text-lg"></i>
-                        </a>
+                        </button>
                     `;
                     formatList.insertAdjacentHTML('beforeend', btnHTML);
                 });
