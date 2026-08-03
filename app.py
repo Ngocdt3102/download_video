@@ -7,32 +7,15 @@ CORS(app)
 
 @app.route('/api/extract-info', methods=['POST'])
 def extract_info():
-    url = None
+    # Hứng dữ liệu trực tiếp từ form-data đã được đổi ở frontend
+    url = request.form.get('url')
     
-    # 1. Ép đọc dữ liệu thô (raw request data) trước tiên bất kể header là gì
-    try:
-        if request.data:
-            import json
-            raw_body = request.data.decode('utf-8')
-            parsed_data = json.loads(raw_body)
-            url = parsed_data.get('url')
-    except Exception:
-        pass
+    # Dự phòng thêm nếu có trường hợp gọi qua JSON
+    if not url and request.is_json:
+        req_data = request.get_json(silent=True)
+        if req_data:
+            url = req_data.get('url')
 
-    # 2. Dự phòng dùng request.get_json() chuẩn của Flask
-    if not url:
-        try:
-            data = request.get_json(silent=True)
-            if data and isinstance(data, dict):
-                url = data.get('url')
-        except Exception:
-            pass
-
-    # 3. Dự phòng cuối cùng dùng form-data
-    if not url and request.form:
-        url = request.form.get('url')
-
-    # Kiểm tra an toàn
     if not url:
         return jsonify({"error": "Vui lòng cung cấp URL video"}), 400
 
