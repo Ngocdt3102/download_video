@@ -7,8 +7,21 @@ CORS(app)
 
 @app.route('/api/extract-info', methods=['POST'])
 def extract_info():
-    data = request.json
-    url = data.get('url')
+    # Cố gắng lấy dữ liệu dưới dạng JSON, nếu không có thì lấy qua request.form hoặc trực tiếp
+    data = request.get_json(silent=True)
+    if not data:
+        data = request.form
+        
+    url = data.get('url') if data else None
+
+    # Nếu vẫn không thấy, thử lấy thẳng từ raw data (phòng hờ fetch bị lỗi header)
+    if not url and request.data:
+        import json
+        try:
+            raw_json = json.loads(request.data.decode('utf-8'))
+            url = raw_json.get('url')
+        except:
+            pass
 
     if not url:
         return jsonify({"error": "Vui lòng cung cấp URL video"}), 400
