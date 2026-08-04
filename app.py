@@ -2,9 +2,11 @@ from flask import Flask, request, jsonify, Response, send_file
 from flask_cors import CORS
 import yt_dlp
 import os
-import time
 import subprocess
 import shutil
+import queue
+import threading
+import re
 
 # --- BÍ KÍP ÉP FFMPEG CHẠY TRÊN CLOUD CHỈ VỚI 1 DÒNG ---
 ffmpeg_exe = shutil.which('ffmpeg')
@@ -83,7 +85,6 @@ def extract_info():
                     "ext": 'mp4',
                 })
 
-            # TỰ ĐỘNG THÊM OPTION AUDIO DÀNH CHO BẠN GÁI 🎧
             if has_audio:
                 final_formats.append({
                     "format_id": "bestaudio",
@@ -106,24 +107,19 @@ def extract_info():
         return jsonify({"error": f"Không thể phân tích video: {str(e)}"}), 500
 
 
-# --- ROUTE TẢI FILE: ĐÃ TÍCH HỢP CHỐNG LỖI QUIC VÀ VƯỢT TƯỜNG LỬA ---
 @app.route('/api/download-file/<path:filename>', methods=['GET'])
 def download_file(filename):
     file_path = os.path.join(DOWNLOAD_DIR, filename)
-    
     if not os.path.exists(file_path):
         return jsonify({"error": "File không tồn tại hoặc đã bị xóa"}), 404
         
     try:
-        # Ép kiểu mimetype thành 'application/octet-stream' (dữ liệu thô) 
-        # Để qua mặt Firewall của Cloud chuyên chặn stream file MP3
         response = send_file(
             file_path,
             as_attachment=True,
             download_name=filename,
             mimetype='application/octet-stream'
         )
-        # Tắt bộ nhớ đệm (Cache) để tránh đụng độ giao thức QUIC
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         return response
     except Exception as e:
@@ -143,18 +139,31 @@ def download_progress():
     if not url:
         return jsonify({"error": "Thiếu URL video"}), 400
 
-    def generate_logs():
-        yield f"data: [LOG] Bắt đầu kết nối tới hệ thống xử lý...\n\n"
-        time.sleep(0.5)
-        yield f"data: [LOG] Đang phân tích liên kết: {url}\n\n"
-        
-        is_audio_only = (format_id == 'bestaudio')
+    # 1. Hàng đợi để giao tiếp giữa Luồng tải nền và Luồng gửi phản hồi SSE
+    q = queue.Queue()
 
+    # Hàm móc vào yt-dlp để lấy % tiến trình thật
+    def progress_hook(d):
+        if d['status'] == 'downloading':
+            p = d.get('_percent_str', '0%')
+            # Làm sạch mã màu ANSI của console
+            p_clean = re.sub(r'\x1b[^m]*m', '', p).strip().replace('%', '')
+            try:
+                q.put(f"data: [PROGRESS] {float(p_clean)}\n\n")
+            except ValueError:
+                pass
+        elif d['status'] == 'finished':
+            q.put(f"data: [LOG] Tải xuống hoàn tất, đang đóng gói dữ liệu...\n\n")
+
+    # Hàm chạy nền để không làm nghẽn Event Stream
+    def run_download_thread():
+        is_audio_only = (format_id == 'bestaudio')
+        
         if not ffmpeg_exe:
-            yield f"data: [LOG] CẢNH BÁO: Không tìm thấy FFmpeg, chuyển sang tải trực tiếp...\n\n"
+            q.put(f"data: [LOG] CẢNH BÁO: Không có FFmpeg, chuyển sang tải trực tiếp...\n\n")
             ydl_format = 'bestaudio/b/best' if is_audio_only else (f"{format_id}/b/best" if format_id != 'best' else 'b/best')
         else:
-            yield f"data: [LOG] Đã kích hoạt lõi FFmpeg chống sập RAM...\n\n"
+            q.put(f"data: [LOG] Đã kích hoạt lõi FFmpeg chống nghẽn...\n\n")
             ydl_format = 'b/best' if is_audio_only else (f"{format_id}+bestaudio/{format_id}/b/best" if format_id != 'best' else 'bestvideo+bestaudio/b/best')
 
         ydl_opts = {
@@ -162,55 +171,77 @@ def download_progress():
             'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
-            # Ép yt-dlp nhận diện FFmpeg một cách bắt buộc
             'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
-            # Bắt buộc yt-dlp gộp video (nếu có) bằng 1 luồng để tiết kiệm RAM
-            'postprocessor_args': ['-threads', '1'] 
+            'postprocessor_args': ['-threads', '1'],
+            'progress_hooks': [progress_hook] # Móc vào tiến trình
         }
 
-        yield f"data: [LOG] Bắt đầu trích xuất luồng dữ liệu...\n\n"
-        
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                yield f"data: [LOG] Đang tiến hành tải xuống và đồng bộ hóa...\n\n"
                 info = ydl.extract_info(url, download=True)
-                
                 filename = ydl.prepare_filename(info)
                 base_filename = os.path.basename(filename)
                 
-                # --- CHUYỂN ĐỔI MP3 THỦ CÔNG & TIẾT KIỆM RAM (CHỐNG LỖI 502) ---
+                # Nén MP3 thủ công (bảo vệ RAM máy chủ)
                 if is_audio_only and ffmpeg_exe:
-                    yield f"data: [LOG] Đang bóc tách Audio (Chế độ tối ưu bộ nhớ)...\n\n"
+                    q.put("data: [LOG] Đang bóc tách Audio (Quá trình này có thể mất chút thời gian)...\n\n")
                     mp3_filename = os.path.splitext(filename)[0] + '.mp3'
                     base_filename = os.path.basename(mp3_filename)
                     
                     try:
-                        # Gọi trực tiếp FFmpeg: Lọc bỏ hình ảnh (-vn) và giới hạn đúng 1 luồng CPU (-threads 1)
                         subprocess.run([
                             ffmpeg_exe, '-y', '-i', filename,
-                            '-vn',
-                            '-acodec', 'libmp3lame', '-b:a', '128k',
-                            '-threads', '1',
-                            mp3_filename
+                            '-vn', '-acodec', 'libmp3lame', '-b:a', '128k',
+                            '-threads', '1', mp3_filename
                         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         
-                        # Xóa file video gốc để giải phóng dung lượng cho máy chủ
                         if os.path.exists(filename) and filename != mp3_filename:
                             os.remove(filename)
                             
                     except subprocess.CalledProcessError:
-                        yield f"data: [LOG] LỖI: Bóc tách thất bại, đang trả về file gốc...\n\n"
+                        q.put("data: [LOG] LỖI: Bóc tách thất bại, đang trả về file gốc...\n\n")
                         base_filename = os.path.basename(filename)
-                
-            yield f"data: [LOG] Đóng gói thành công!\n\n"
-            yield f"data: [PROGRESS] 100\n\n"
-            yield f"data: [SUCCESS] {base_filename}\n\n"
 
+            q.put(f"DONE:{base_filename}")
         except Exception as e:
-            yield f"data: [LOG] LỖI TRONG QUÁ TRÌNH TẢI: {str(e)}\n\n"
-            yield f"data: [ERROR] {str(e)}\n\n"
+            q.put(f"ERROR:{str(e)}")
 
-    return Response(generate_logs(), mimetype='text/event-stream')
+    def generate_logs():
+        yield f"data: [LOG] Bắt đầu kết nối tới hệ thống...\n\n"
+        yield f"data: [LOG] Đang phân tích liên kết...\n\n"
+        
+        # Bật luồng tải ngầm để luồng này rảnh tay bơm dữ liệu
+        threading.Thread(target=run_download_thread).start()
+
+        while True:
+            try:
+                # Ép Timeout 10s: Nếu yt-dlp đang im lặng nén file, Queue sẽ trống sau 10s
+                msg = q.get(timeout=10)
+                
+                if msg.startswith("DONE:"):
+                    filename = msg.split(":", 1)[1]
+                    yield f"data: [LOG] Đóng gói thành công!\n\n"
+                    yield f"data: [PROGRESS] 100\n\n"
+                    yield f"data: [SUCCESS] {filename}\n\n"
+                    break
+                elif msg.startswith("ERROR:"):
+                    error_msg = msg.split(":", 1)[1]
+                    yield f"data: [LOG] LỖI TRONG QUÁ TRÌNH TẢI: {error_msg}\n\n"
+                    yield f"data: [ERROR] {error_msg}\n\n"
+                    break
+                else:
+                    yield msg # Bơm % tiến trình thật hoặc log ra giao diện
+            except queue.Empty:
+                # [QUAN TRỌNG NHẤT]: Tim đập (Heartbeat) để giữ proxy Cloud không cắt dây mạng
+                yield f"data: [LOG] Đang xử lý... (Vui lòng không đóng trang)\n\n"
+
+    # Thêm Header vô hiệu hóa bộ đệm X-Accel để xuyên tường lửa Nginx/Cloudflare
+    headers = {
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
+        'Connection': 'keep-alive'
+    }
+    return Response(generate_logs(), mimetype='text/event-stream', headers=headers)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
