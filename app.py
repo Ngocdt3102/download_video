@@ -2,9 +2,19 @@ from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 import yt_dlp
 import os
-import subprocess
 import time
 import shutil
+
+# --- BÍ KÍP ÉP FFMPEG CHẠY TRÊN CLOUD ---
+try:
+    import imageio_ffmpeg
+    # Lấy đường dẫn file chạy FFmpeg được cài ngầm bởi Python
+    ffmpeg_exe_path = imageio_ffmpeg.get_ffmpeg_exe()
+    # Ép nó vào biến môi trường hệ thống để shutil.which và yt-dlp nhìn thấy
+    os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg_exe_path)
+except ImportError:
+    pass # Dự phòng nếu bạn đang chạy test ở máy tính cá nhân mà chưa cài thư viện
+# ----------------------------------------
 
 app = Flask(__name__)
 CORS(app)
@@ -122,18 +132,24 @@ def download_progress():
         time.sleep(0.5)
         yield f"data: [LOG] Đang phân tích liên kết: {url}\n\n"
         
+        # Kiểm tra sự tồn tại của ffmpeg (Chắc chắn sẽ tìm thấy nhờ đoạn hack trên đầu file)
         ffmpeg_path = shutil.which('ffmpeg')
-        is_audio_only = (format_id == 'bestaudio') # Kiểm tra xem đây có phải lệnh tải Audio không
+        is_audio_only = (format_id == 'bestaudio')
 
         if not ffmpeg_path:
             yield f"data: [LOG] CẢNH BÁO: Không tìm thấy FFmpeg, chuyển sang tải trực tiếp...\n\n"
-            ydl_format = 'bestaudio' if is_audio_only else 'best'
+            # Fallback liên hoàn chống lỗi TikTok
+            if is_audio_only:
+                ydl_format = 'bestaudio/b/best' 
+            else:
+                ydl_format = f"{format_id}/b/best" if format_id != 'best' else 'b/best'
         else:
             yield f"data: [LOG] Đã phát hiện công cụ xử lý FFmpeg: {ffmpeg_path}\n\n"
             if is_audio_only:
-                ydl_format = 'bestaudio/best'
+                ydl_format = 'bestaudio/b/best'
             else:
-                ydl_format = f"{format_id}+bestaudio/best" if format_id != 'best' else 'best'
+                # Ép gộp -> Tải file gộp sẵn -> Tải tốt nhất
+                ydl_format = f"{format_id}+bestaudio/{format_id}/b/best" if format_id != 'best' else 'bestvideo+bestaudio/b/best'
 
         ydl_opts = {
             'format': ydl_format,
