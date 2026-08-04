@@ -3,23 +3,21 @@ from flask_cors import CORS
 import yt_dlp
 import os
 import time
+import subprocess
 import shutil
 
-# --- BÍ KÍP ÉP FFMPEG CHẠY TRÊN CLOUD ---
+# --- BÍ KÍP ÉP FFMPEG CHẠY TRÊN CLOUD CHỈ VỚI 1 DÒNG ---
+ffmpeg_exe = shutil.which('ffmpeg')
 try:
     import imageio_ffmpeg
-    # Lấy đường dẫn file chạy FFmpeg được cài ngầm bởi Python
-    ffmpeg_exe_path = imageio_ffmpeg.get_ffmpeg_exe()
-    # Ép nó vào biến môi trường hệ thống để shutil.which và yt-dlp nhìn thấy
-    os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg_exe_path)
-except ImportError:
-    pass # Dự phòng nếu bạn đang chạy test ở máy tính cá nhân mà chưa cài thư viện
-# ----------------------------------------
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+except Exception:
+    pass
+# -------------------------------------------------------
 
 app = Flask(__name__)
 CORS(app)
 
-# Thư mục lưu trữ tạm file video sau khi gộp
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -50,7 +48,7 @@ def extract_info():
             formats_list = info.get('formats', [])
             
             video_dict = {}
-            has_audio = False # Biến kiểm tra xem video có chứa âm thanh không
+            has_audio = False
 
             for f in formats_list:
                 if not f.get('url'):
@@ -59,11 +57,9 @@ def extract_info():
                 acodec = f.get('acodec', 'none')
                 height = f.get('height')
 
-                # Cờ đánh dấu nếu tìm thấy luồng âm thanh
                 if acodec != 'none':
                     has_audio = True
                 
-                # Lọc các định dạng video có độ phân giải
                 if vcodec != 'none' and height:
                     if height not in video_dict:
                         video_dict[height] = {
@@ -86,10 +82,10 @@ def extract_info():
                     "ext": 'mp4',
                 })
 
-            # TỰ ĐỘNG THÊM OPTION AUDIO VÀO CUỐI DANH SÁCH NẾU CÓ HỖ TRỢ
+            # TỰ ĐỘNG THÊM OPTION AUDIO DÀNH CHO BẠN GÁI 🎧
             if has_audio:
                 final_formats.append({
-                    "format_id": "bestaudio", # ID đặc biệt để Backend dễ dàng bắt diện
+                    "format_id": "bestaudio",
                     "resolution": "Audio 🎧 (MP3 - Tốt nhất)",
                     "ext": "mp3"
                 })
@@ -132,40 +128,24 @@ def download_progress():
         time.sleep(0.5)
         yield f"data: [LOG] Đang phân tích liên kết: {url}\n\n"
         
-        # Kiểm tra sự tồn tại của ffmpeg (Chắc chắn sẽ tìm thấy nhờ đoạn hack trên đầu file)
-        ffmpeg_path = shutil.which('ffmpeg')
         is_audio_only = (format_id == 'bestaudio')
 
-        if not ffmpeg_path:
+        if not ffmpeg_exe:
             yield f"data: [LOG] CẢNH BÁO: Không tìm thấy FFmpeg, chuyển sang tải trực tiếp...\n\n"
-            # Fallback liên hoàn chống lỗi TikTok
-            if is_audio_only:
-                ydl_format = 'bestaudio/b/best' 
-            else:
-                ydl_format = f"{format_id}/b/best" if format_id != 'best' else 'b/best'
+            ydl_format = 'bestaudio/b/best' if is_audio_only else (f"{format_id}/b/best" if format_id != 'best' else 'b/best')
         else:
-            yield f"data: [LOG] Đã phát hiện công cụ xử lý FFmpeg: {ffmpeg_path}\n\n"
-            if is_audio_only:
-                ydl_format = 'bestaudio/b/best'
-            else:
-                # Ép gộp -> Tải file gộp sẵn -> Tải tốt nhất
-                ydl_format = f"{format_id}+bestaudio/{format_id}/b/best" if format_id != 'best' else 'bestvideo+bestaudio/b/best'
+            yield f"data: [LOG] Đã kích hoạt lõi FFmpeg chống sập RAM...\n\n"
+            # TikTok không có Audio riêng, nên ta tải file Video tốt nhất về để tự cắt tiếng
+            ydl_format = 'b/best' if is_audio_only else (f"{format_id}+bestaudio/{format_id}/b/best" if format_id != 'best' else 'bestvideo+bestaudio/b/best')
 
         ydl_opts = {
             'format': ydl_format,
             'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
             'quiet': True,
-            'no_warnings': True
+            'no_warnings': True,
+            # Bắt buộc yt-dlp gộp video (nếu có) bằng 1 luồng để tiết kiệm RAM
+            'postprocessor_args': ['-threads', '1'] 
         }
-
-        # Nếu là tải Audio, kích hoạt bộ PostProcessor để ép kiểu sang MP3
-        if is_audio_only and ffmpeg_path:
-            yield f"data: [LOG] Chế độ Audio kích hoạt. Chuẩn bị chuyển đổi MP3...\n\n"
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192', # Chuẩn chất lượng 192kbps mượt mà
-            }]
 
         yield f"data: [LOG] Bắt đầu trích xuất luồng dữ liệu...\n\n"
         
@@ -177,16 +157,32 @@ def download_progress():
                 filename = ydl.prepare_filename(info)
                 base_filename = os.path.basename(filename)
                 
-                # Nếu qua bước convert MP3, yt-dlp sẽ tự động đổi đuôi file thực tế thành .mp3
-                # Do đó ta cần báo lại cho Frontend biết tên file mp3 chính xác để tải về
-                if is_audio_only and ffmpeg_path:
-                    base_filename = os.path.splitext(base_filename)[0] + '.mp3'
+                # --- CHUYỂN ĐỔI MP3 THỦ CÔNG & TIẾT KIỆM RAM (CHỐNG LỖI 502) ---
+                if is_audio_only and ffmpeg_exe:
+                    yield f"data: [LOG] Đang bóc tách Audio (Chế độ tối ưu bộ nhớ)...\n\n"
+                    mp3_filename = os.path.splitext(filename)[0] + '.mp3'
+                    base_filename = os.path.basename(mp3_filename)
+                    
+                    try:
+                        # Gọi trực tiếp FFmpeg: Lọc bỏ hình ảnh (-vn) và giới hạn đúng 1 luồng CPU (-threads 1)
+                        subprocess.run([
+                            ffmpeg_exe, '-y', '-i', filename,
+                            '-vn',
+                            '-acodec', 'libmp3lame', '-b:a', '128k',
+                            '-threads', '1',
+                            mp3_filename
+                        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        
+                        # Xóa file video gốc để giải phóng dung lượng cho máy chủ
+                        if os.path.exists(filename) and filename != mp3_filename:
+                            os.remove(filename)
+                            
+                    except subprocess.CalledProcessError:
+                        yield f"data: [LOG] LỖI: Bóc tách thất bại, đang trả về file gốc...\n\n"
+                        base_filename = os.path.basename(filename)
                 
-            yield f"data: [LOG] Đang xử lý tín hiệu và đóng gói tệp tin...\n\n"
-            time.sleep(1)
             yield f"data: [LOG] Đóng gói thành công!\n\n"
             yield f"data: [PROGRESS] 100\n\n"
-            
             yield f"data: [SUCCESS] {base_filename}\n\n"
 
         except Exception as e:
