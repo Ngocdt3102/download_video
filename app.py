@@ -40,11 +40,18 @@ def extract_info():
             formats_list = info.get('formats', [])
             
             video_dict = {}
+            has_audio = False # Biến kiểm tra xem video có chứa âm thanh không
+
             for f in formats_list:
                 if not f.get('url'):
                     continue
                 vcodec = f.get('vcodec', 'none')
+                acodec = f.get('acodec', 'none')
                 height = f.get('height')
+
+                # Cờ đánh dấu nếu tìm thấy luồng âm thanh
+                if acodec != 'none':
+                    has_audio = True
                 
                 # Lọc các định dạng video có độ phân giải
                 if vcodec != 'none' and height:
@@ -69,6 +76,14 @@ def extract_info():
                     "ext": 'mp4',
                 })
 
+            # TỰ ĐỘNG THÊM OPTION AUDIO VÀO CUỐI DANH SÁCH NẾU CÓ HỖ TRỢ
+            if has_audio:
+                final_formats.append({
+                    "format_id": "bestaudio", # ID đặc biệt để Backend dễ dàng bắt diện
+                    "resolution": "Audio 🎧 (MP3 - Tốt nhất)",
+                    "ext": "mp3"
+                })
+
             response_data = {
                 "title": info.get('title'),
                 "thumbnail": info.get('thumbnail'),
@@ -84,7 +99,6 @@ def extract_info():
         return jsonify({"error": f"Không thể phân tích video: {str(e)}"}), 500
 
 
-# --- ROUTE MỚI: Phục vụ việc gửi file từ máy chủ về trình duyệt người dùng ---
 @app.route('/api/download-file/<path:filename>', methods=['GET'])
 def download_file(filename):
     return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
@@ -92,11 +106,9 @@ def download_file(filename):
 
 @app.route('/api/download-progress', methods=['POST'])
 def download_progress():
-    # 1. Bắt dữ liệu cực kỳ an toàn từ Form (Giống hệt extract-info)
     url = request.form.get('url')
     format_id = request.form.get('format_id', 'best')
 
-    # Dự phòng nếu gửi bằng JSON
     if not url and request.is_json:
         req_data = request.get_json(silent=True) or {}
         url = req_data.get('url')
@@ -110,14 +122,18 @@ def download_progress():
         time.sleep(0.5)
         yield f"data: [LOG] Đang phân tích liên kết: {url}\n\n"
         
-        # Kiểm tra sự tồn tại của ffmpeg
         ffmpeg_path = shutil.which('ffmpeg')
+        is_audio_only = (format_id == 'bestaudio') # Kiểm tra xem đây có phải lệnh tải Audio không
+
         if not ffmpeg_path:
             yield f"data: [LOG] CẢNH BÁO: Không tìm thấy FFmpeg, chuyển sang tải trực tiếp...\n\n"
-            ydl_format = 'best'
+            ydl_format = 'bestaudio' if is_audio_only else 'best'
         else:
             yield f"data: [LOG] Đã phát hiện công cụ xử lý FFmpeg: {ffmpeg_path}\n\n"
-            ydl_format = f"{format_id}+bestaudio/best" if format_id != 'best' else 'best'
+            if is_audio_only:
+                ydl_format = 'bestaudio/best'
+            else:
+                ydl_format = f"{format_id}+bestaudio/best" if format_id != 'best' else 'best'
 
         ydl_opts = {
             'format': ydl_format,
@@ -126,23 +142,35 @@ def download_progress():
             'no_warnings': True
         }
 
-        yield f"data: [LOG] Bắt đầu tải phần video và âm thanh...\n\n"
+        # Nếu là tải Audio, kích hoạt bộ PostProcessor để ép kiểu sang MP3
+        if is_audio_only and ffmpeg_path:
+            yield f"data: [LOG] Chế độ Audio kích hoạt. Chuẩn bị chuyển đổi MP3...\n\n"
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192', # Chuẩn chất lượng 192kbps mượt mà
+            }]
+
+        yield f"data: [LOG] Bắt đầu trích xuất luồng dữ liệu...\n\n"
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                yield f"data: [LOG] Đang tiến hành tải xuống và đồng bộ hóa dữ liệu...\n\n"
+                yield f"data: [LOG] Đang tiến hành tải xuống và đồng bộ hóa...\n\n"
                 info = ydl.extract_info(url, download=True)
                 
-                # --- ĐIỂM QUAN TRỌNG: Lấy tên file thực tế sau khi tải xong ---
                 filename = ydl.prepare_filename(info)
                 base_filename = os.path.basename(filename)
                 
-            yield f"data: [LOG] Đang thực hiện ghép nối (muxing) video hoàn chỉnh...\n\n"
+                # Nếu qua bước convert MP3, yt-dlp sẽ tự động đổi đuôi file thực tế thành .mp3
+                # Do đó ta cần báo lại cho Frontend biết tên file mp3 chính xác để tải về
+                if is_audio_only and ffmpeg_path:
+                    base_filename = os.path.splitext(base_filename)[0] + '.mp3'
+                
+            yield f"data: [LOG] Đang xử lý tín hiệu và đóng gói tệp tin...\n\n"
             time.sleep(1)
-            yield f"data: [LOG] Đóng gói tệp tin thành công!\n\n"
+            yield f"data: [LOG] Đóng gói thành công!\n\n"
             yield f"data: [PROGRESS] 100\n\n"
             
-            # --- ĐIỂM QUAN TRỌNG: Gửi tên file về Frontend qua thẻ SUCCESS ---
             yield f"data: [SUCCESS] {base_filename}\n\n"
 
         except Exception as e:

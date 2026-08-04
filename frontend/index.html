@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexus | Trình Trích Xuất Tín Hiệu</title>
 
+    <!-- Tiêu chuẩn cho trình duyệt web (Máy tính) -->
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+
+    <!-- Dành cho hệ sinh thái Apple (iPhone, iPad, Mac) -->
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+
+    <!-- Cấu hình Web App cho thiết bị Android -->
+    <link rel="manifest" href="site.webmanifest">
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -31,16 +42,11 @@
                         mute: '#8B909C',
                     },
                     animation: {
-                        'float': 'float 7s ease-in-out infinite',
                         'drift': 'drift 18s ease infinite alternate',
                         'scan': 'scan 2.4s linear infinite',
                         'blink': 'blink 1.1s step-end infinite',
                     },
                     keyframes: {
-                        float: {
-                            '0%, 100%': { transform: 'translateY(0)' },
-                            '50%': { transform: 'translateY(-8px)' },
-                        },
                         drift: {
                             '0%': { transform: 'translate(0,0) scale(1)' },
                             '100%': { transform: 'translate(30px,-25px) scale(1.15)' },
@@ -96,7 +102,6 @@
             background: rgba(232, 179, 76, 0.05);
         }
 
-        /* Signature: waveform / signal bars */
         .wave-bars { display: flex; align-items: flex-end; gap: 3px; }
         .wave-bars span {
             display: block; width: 3px; border-radius: 2px;
@@ -137,133 +142,241 @@
             height: 1px;
             background: linear-gradient(90deg, transparent, rgba(232,179,76,0.25), transparent);
         }
+
+        /* ============ Adaptive stage: single column -> two column ============ */
+        #stage {
+            width: 100%;
+            margin: 0 auto;
+        }
+        #stage.stage-single {
+            display: flex;
+            flex-direction: column;
+            max-width: 640px;
+            min-height: 56vh;
+            justify-content: center;
+        }
+        #stage.stage-split {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 2.5rem;
+            max-width: 1400px;
+        }
+        @media (min-width: 1024px) {
+            #stage.stage-split { grid-template-columns: 360px minmax(0, 1fr); gap: 3rem; }
+        }
+        @media (min-width: 1280px) {
+            #stage.stage-split { grid-template-columns: 400px minmax(0, 1fr); gap: 3.5rem; }
+        }
+
+        #leftPanel {
+            display: flex;
+            flex-direction: column;
+            gap: 1.65rem;
+            width: 100%;
+            min-width: 0;
+        }
+        .stage-single #leftPanel { align-items: center; text-align: center; }
+        .stage-split #leftPanel { align-items: flex-start; text-align: left; }
+        @media (min-width: 1024px) {
+            .stage-split #leftPanel { position: sticky; top: 7.5rem; }
+        }
+
+        .social-row { display: flex; align-items: center; gap: 1.1rem; }
+        .stage-single .social-row { justify-content: center; }
+        .stage-split .social-row { justify-content: flex-start; }
+
+        #rightPanel {
+            display: none;
+            width: 100%;
+            min-width: 0;
+            flex-direction: column;
+            gap: 1.75rem;
+        }
+        .stage-split #rightPanel { display: flex; }
+
+        .panel-reveal {
+            opacity: 0;
+            transform: translateY(16px);
+            transition: opacity .5s ease, transform .5s ease;
+        }
+        .panel-reveal.is-visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Inline terminal block — part of page flow, not an overlay */
+        .term-dot { width: 9px; height: 9px; border-radius: 999px; }
+
+        .progress-track {
+            width: 100%; height: 6px; border-radius: 999px;
+            background: rgba(255,255,255,0.06); overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%; width: 0%;
+            background: linear-gradient(90deg, #5EEAD4, #E8B34C);
+            transition: width .4s cubic-bezier(.4,0,.2,1);
+        }
+
+        .term-log-line { animation: lineIn .25s ease; }
+        @keyframes lineIn {
+            from { opacity: 0; transform: translateY(3px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
-<body class="text-[#C7CBD4] font-sans min-h-screen flex flex-col items-center selection:bg-gold/20">
+<body class="text-[#C7CBD4] font-sans min-h-screen selection:bg-gold/20">
 
     <!-- Ambient glow -->
-    <div class="fixed inset-0 w-full h-full pointer-events-none z-0 overflow-hidden flex justify-center">
-        <div class="absolute top-[-18%] left-[8%] w-[560px] h-[560px] bg-gold/[0.07] rounded-full blur-[150px] animate-drift"></div>
-        <div class="absolute top-[8%] right-[6%] w-[460px] h-[460px] bg-teal/[0.05] rounded-full blur-[130px] animate-drift" style="animation-delay:-6s;"></div>
-        <div class="absolute bottom-[-12%] left-[28%] w-[760px] h-[380px] bg-ember/[0.04] rounded-full blur-[160px] animate-drift" style="animation-delay:-11s;"></div>
+    <div class="fixed inset-0 w-full h-full pointer-events-none z-0 overflow-hidden">
+        <div class="absolute top-[-18%] left-[4%] w-[560px] h-[560px] bg-gold/[0.07] rounded-full blur-[150px] animate-drift"></div>
+        <div class="absolute top-[8%] right-[4%] w-[460px] h-[460px] bg-teal/[0.05] rounded-full blur-[130px] animate-drift" style="animation-delay:-6s;"></div>
+        <div class="absolute bottom-[-12%] left-[24%] w-[760px] h-[380px] bg-ember/[0.04] rounded-full blur-[160px] animate-drift" style="animation-delay:-11s;"></div>
     </div>
 
     <!-- Header -->
-    <header class="fixed top-6 left-1/2 -translate-x-1/2 z-50">
-        <div class="flex items-center gap-4 bg-[#0d0f16]/75 backdrop-blur-xl border border-white/[0.07] pl-4 pr-5 py-2.5 rounded-full shadow-[0_10px_35px_rgba(0,0,0,0.55)] transition-all hover:border-gold/25 cursor-default">
-            <div class="wave-bars wave-idle h-4 items-end">
+    <header class="fixed top-6 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-md sm:w-auto">
+        <div class="flex items-center justify-center gap-3 sm:gap-4 bg-[#0d0f16]/75 backdrop-blur-xl border border-white/[0.07] pl-4 pr-5 py-2.5 rounded-full shadow-[0_10px_35px_rgba(0,0,0,0.55)] transition-all hover:border-gold/25 cursor-default">
+            <div class="wave-bars wave-idle h-4 items-end shrink-0">
                 <span></span><span></span><span></span><span></span><span></span>
             </div>
             <span class="font-display text-sm font-bold tracking-[0.22em] text-[#F2F0EA] uppercase">Nexus</span>
-            <div class="w-[1px] h-4 bg-white/10"></div>
-            <span class="font-mono text-[11px] text-mute tracking-wide">v3.0 // ổn định</span>
+            <div class="w-[1px] h-4 bg-white/10 hidden sm:block"></div>
+            <span class="font-mono text-[11px] text-mute tracking-wide hidden sm:inline">v3.0 // ổn định</span>
         </div>
     </header>
 
-    <main class="relative z-10 w-full max-w-4xl mx-auto px-4 flex-1 flex flex-col justify-center pb-20 pt-32">
+    <main class="relative z-10 w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-10 pt-28 sm:pt-32 pb-10">
+        <div id="stage" class="stage-single">
 
-        <!-- Hero -->
-        <div class="text-center space-y-6 mb-12 animate-float">
+            <!-- ============ LEFT: always-present control panel ============ -->
+            <div id="leftPanel">
 
-            <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-gold/20 bg-gold/[0.06] text-goldSoft font-mono text-[11px] tracking-[0.15em] uppercase mb-1">
-                <i class="fa-solid fa-bolt text-teal text-[10px]"></i> Engine v3.0 — sẵn sàng giải mã
+                <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-gold/20 bg-gold/[0.06] text-goldSoft font-mono text-[11px] tracking-[0.15em] uppercase w-fit">
+                    <i class="fa-solid fa-bolt text-teal text-[10px]"></i> Engine v3.0 — sẵn sàng giải mã
+                </div>
+
+                <h1 class="font-display text-3xl sm:text-4xl lg:text-[2.6rem] font-bold tracking-tight text-[#F5F3EE] leading-[1.15]">
+                    Trích xuất liên kết.
+                    <span class="block text-gold" style="text-shadow: 0 0 45px rgba(232,179,76,0.28);">Không giới hạn.</span>
+                </h1>
+
+                <p class="text-mute text-base sm:text-lg leading-relaxed max-w-lg">
+                    Tải xuống tệp tin gốc, giữ nguyên chất lượng. Tương thích với
+                    <span class="text-[#E4E1DA] font-medium">YouTube, TikTok, Facebook</span>
+                    và hàng ngàn nền tảng khác.
+                </p>
+
+                <!-- Search -->
+                <form id="downloadForm" class="w-full flex flex-col gap-3 relative group z-20">
+                    <div class="relative">
+                        <div class="absolute -inset-0.5 bg-gold/10 rounded-2xl blur-md opacity-0 group-focus-within:opacity-100 transition duration-500 ease-out"></div>
+                        <div class="relative flex items-center gap-3 rounded-2xl px-4 py-3.5 glass-input">
+                            <i class="fa-solid fa-satellite-dish text-mute text-lg shrink-0 group-focus-within:text-gold transition-colors duration-300"></i>
+                            <input type="url" id="urlInput" required autocomplete="off" spellcheck="false"
+                                class="w-full min-w-0 bg-transparent border-none text-[#F2F0EA] focus:ring-0 placeholder-[#5B5F6A] text-sm sm:text-base outline-none font-medium caret-gold"
+                                placeholder="Dán URL video vào đây...">
+                        </div>
+                    </div>
+
+                    <button type="submit" id="submitBtn"
+                        class="w-full bg-gold hover:bg-goldSoft text-[#1A1206] font-semibold rounded-2xl px-6 py-3.5 transition-all duration-300 flex items-center justify-center gap-2 active:scale-[0.98] transform disabled:opacity-60 disabled:cursor-not-allowed">
+                        <span class="whitespace-nowrap text-sm sm:text-base tracking-wide" id="submitBtnText">Trích xuất ngay</span>
+                        <i class="fa-solid fa-arrow-right text-[#1A1206]/80 text-sm"></i>
+                    </button>
+                </form>
+
+                <!-- Loading -->
+                <div id="loadingState" class="hidden w-full flex-col items-center gap-4 py-2">
+                    <div class="wave-bars wave-loud h-10 items-end">
+                        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+                    </div>
+                    <p class="font-mono text-goldSoft text-[11px] tracking-[0.2em] uppercase">
+                        Đang giải mã tín hiệu<span class="animate-blink">_</span>
+                    </p>
+                </div>
+
+                <!-- Error -->
+                <div id="errorState" class="hidden w-full glass border-ember/20 p-5 rounded-2xl flex items-center gap-4 text-left">
+                    <div class="w-10 h-10 rounded-full bg-ember/10 flex items-center justify-center text-ember shrink-0">
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <h4 class="text-ember font-display font-semibold text-sm uppercase tracking-wider mb-1">Cảnh báo hệ thống</h4>
+                        <p id="errorMessage" class="text-mute text-sm break-words">Không thể truy xuất dữ liệu từ liên kết này.</p>
+                    </div>
+                </div>
+
+                <div class="social-row text-[#565A64] text-lg">
+                    <i class="fa-brands fa-youtube hover:text-ember transition-colors cursor-default"></i>
+                    <span class="text-[6px] text-white/10">●</span>
+                    <i class="fa-brands fa-tiktok hover:text-[#E4E1DA] transition-colors cursor-default"></i>
+                    <span class="text-[6px] text-white/10">●</span>
+                    <i class="fa-brands fa-facebook hover:text-teal transition-colors cursor-default"></i>
+                    <span class="text-[6px] text-white/10">●</span>
+                    <i class="fa-brands fa-instagram hover:text-gold transition-colors cursor-default"></i>
+                    <span class="text-[6px] text-white/10">●</span>
+                    <i class="fa-brands fa-x-twitter hover:text-[#E4E1DA] transition-colors cursor-default"></i>
+                </div>
             </div>
 
-            <h1 class="font-display text-5xl md:text-7xl font-bold tracking-tight text-[#F5F3EE] leading-[1.1]">
-                Trích xuất liên kết. <br/>
-                <span class="text-gold" style="text-shadow: 0 0 45px rgba(232,179,76,0.28);">Không giới hạn.</span>
-            </h1>
+            <!-- ============ RIGHT: appears only once a result exists ============ -->
+            <div id="rightPanel">
 
-            <p class="text-mute text-lg md:text-xl max-w-2xl mx-auto font-normal leading-relaxed">
-                Tải xuống tệp tin gốc, giữ nguyên chất lượng. Tương thích với
-                <span class="text-[#E4E1DA] font-medium border-b border-white/15 pb-0.5 hover:text-gold hover:border-gold/40 transition-colors cursor-default">YouTube, TikTok, Facebook</span>
-                và hàng ngàn nền tảng khác.
-            </p>
-        </div>
-
-        <!-- Search -->
-        <form id="downloadForm" class="w-full max-w-2xl mx-auto relative group z-20">
-            <div class="absolute -inset-0.5 bg-gold/10 rounded-full blur-md opacity-0 group-focus-within:opacity-100 transition duration-500 ease-out"></div>
-
-            <div class="relative flex items-center rounded-full p-1.5 pl-5 glass-input backdrop-blur-xl shadow-lg">
-                <i class="fa-solid fa-satellite-dish text-mute text-lg group-focus-within:text-gold transition-colors duration-300"></i>
-
-                <input type="url" id="urlInput" required autocomplete="off" spellcheck="false"
-                    class="w-full bg-transparent border-none text-[#F2F0EA] px-4 py-3 focus:ring-0 placeholder-[#5B5F6A] text-base outline-none font-medium caret-gold"
-                    placeholder="Dán URL video (YouTube, TikTok, Facebook)...">
-
-                <button type="submit"
-                    class="bg-gold hover:bg-goldSoft text-[#1A1206] font-semibold rounded-full px-7 py-2.5 transition-all duration-300 flex items-center gap-2 active:scale-95 transform group/btn shrink-0">
-                    <span class="whitespace-nowrap text-sm md:text-base tracking-wide">Trích xuất</span>
-                    <i class="fa-solid fa-arrow-right text-[#1A1206]/80 text-sm group-hover/btn:translate-x-1 transition-transform"></i>
-                </button>
-            </div>
-
-            <div class="flex justify-center items-center gap-5 mt-7 text-[#565A64] text-lg">
-                <i class="fa-brands fa-youtube hover:text-ember transition-colors cursor-default"></i>
-                <span class="text-[6px] text-white/10">●</span>
-                <i class="fa-brands fa-tiktok hover:text-[#E4E1DA] transition-colors cursor-default"></i>
-                <span class="text-[6px] text-white/10">●</span>
-                <i class="fa-brands fa-facebook hover:text-teal transition-colors cursor-default"></i>
-                <span class="text-[6px] text-white/10">●</span>
-                <i class="fa-brands fa-instagram hover:text-gold transition-colors cursor-default"></i>
-                <span class="text-[6px] text-white/10">●</span>
-                <i class="fa-brands fa-x-twitter hover:text-[#E4E1DA] transition-colors cursor-default"></i>
-            </div>
-        </form>
-
-        <!-- Loading -->
-        <div id="loadingState" class="hidden mt-14 w-full max-w-md mx-auto flex-col items-center justify-center gap-5">
-            <div class="wave-bars wave-loud h-[50px] items-end">
-                <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
-            </div>
-            <p class="font-mono text-goldSoft text-[11px] tracking-[0.2em] uppercase">
-                Đang giải mã tín hiệu<span class="animate-blink">_</span>
-            </p>
-        </div>
-
-        <!-- Error -->
-        <div id="errorState" class="hidden mt-8 max-w-2xl mx-auto w-full glass border-ember/20 p-5 rounded-2xl flex items-center gap-4">
-            <div class="w-10 h-10 rounded-full bg-ember/10 flex items-center justify-center text-ember shrink-0">
-                <i class="fa-solid fa-triangle-exclamation"></i>
-            </div>
-            <div>
-                <h4 class="text-ember font-display font-semibold text-sm uppercase tracking-wider mb-1">Cảnh báo hệ thống</h4>
-                <p id="errorMessage" class="text-mute text-sm">Không thể truy xuất dữ liệu từ liên kết này.</p>
-            </div>
-        </div>
-
-        <!-- Result -->
-        <div id="resultCard" class="hidden mt-14 w-full glass rounded-[1.75rem] p-3 shadow-2xl transition-all duration-700 opacity-0 translate-y-8">
-            <div class="flex flex-col md:flex-row bg-ink/40 rounded-[1.4rem] overflow-hidden">
-
-                <div class="w-full md:w-5/12 relative p-4 pb-0 md:pb-4">
-                    <div class="w-full h-full min-h-[220px] rounded-2xl overflow-hidden relative shadow-lg group">
+                <!-- 1. Info box: thumbnail banner + video info -->
+                <div id="infoBox" class="panel-reveal glass rounded-[1.75rem] overflow-hidden">
+                    <div class="relative w-full aspect-video group">
                         <img id="videoThumb" src="" alt="Thumbnail" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-in-out">
                         <div class="scan-line"></div>
-                        <div class="absolute inset-0 bg-gradient-to-t from-ink via-transparent to-transparent opacity-85"></div>
-                        <span id="videoPlatform" class="absolute bottom-4 left-4 bg-[#0d0f16]/85 backdrop-blur text-goldSoft font-mono text-[10px] font-semibold px-3 py-1.5 rounded-full uppercase tracking-[0.15em] border border-gold/20"></span>
+                        <div class="absolute inset-0 bg-gradient-to-t from-ink via-ink/10 to-transparent"></div>
+                        <span id="videoPlatform" class="absolute top-4 left-4 bg-[#0d0f16]/85 backdrop-blur text-goldSoft font-mono text-[10px] font-semibold px-3 py-1.5 rounded-full uppercase tracking-[0.15em] border border-gold/20"></span>
+                        <h2 id="videoTitle" class="absolute bottom-0 left-0 right-0 p-5 font-display text-lg sm:text-xl font-semibold text-[#F5F3EE] leading-snug line-clamp-2"></h2>
+                    </div>
+                    <div class="flex items-center gap-2 font-mono text-[11px] text-teal uppercase tracking-[0.15em] px-5 py-3 border-t border-white/[0.06]">
+                        <i class="fa-solid fa-circle-check"></i> Trích xuất thành công
                     </div>
                 </div>
 
-                <div class="w-full md:w-7/12 p-6 md:p-8 flex flex-col justify-center">
-                    <h2 id="videoTitle" class="font-display text-xl md:text-2xl font-semibold text-[#F5F3EE] leading-snug line-clamp-2 mb-6"></h2>
-
-                    <div class="space-y-4">
-                        <div class="flex items-center gap-2 font-mono text-[11px] font-medium text-mute uppercase tracking-[0.15em] pb-2">
-                            <i class="fa-solid fa-tower-broadcast text-teal"></i> Server gốc
-                        </div>
-                        <div class="divider-hair -mt-3 mb-1"></div>
-                        <div id="formatList" class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[220px] overflow-y-auto pr-2">
-                            <!-- rows render here -->
-                        </div>
+                <!-- 2. Format list -->
+                <div id="formatBox" class="panel-reveal glass rounded-[1.75rem] p-5 sm:p-6">
+                    <div class="flex items-center gap-2 font-mono text-[11px] font-medium text-mute uppercase tracking-[0.15em] pb-3">
+                        <i class="fa-solid fa-tower-broadcast text-teal"></i> Chọn định dạng tải xuống
+                    </div>
+                    <div class="divider-hair mb-4"></div>
+                    <div id="formatList" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <!-- rows render here -->
                     </div>
                 </div>
+
+                <!-- 3. Inline terminal (part of the page, not a floating modal) -->
+                <div id="terminalBox" class="panel-reveal glass rounded-[1.75rem] overflow-hidden">
+                    <div class="flex items-center justify-between px-5 py-3.5 border-b border-white/[0.06] bg-white/[0.015]">
+                        <div class="flex items-center gap-3">
+                            <div class="flex items-center gap-1.5">
+                                <span class="term-dot bg-ember/70"></span>
+                                <span class="term-dot bg-gold/70"></span>
+                                <span class="term-dot bg-teal/70"></span>
+                            </div>
+                            <span class="font-mono text-[11px] text-mute tracking-wide">system@nexus:~/downloads</span>
+                        </div>
+                        <span id="terminalPercent" class="font-mono text-[11px] text-gold font-semibold">0%</span>
+                    </div>
+
+                    <div class="px-5 pt-4">
+                        <div class="progress-track">
+                            <div id="terminalProgress" class="progress-fill"></div>
+                        </div>
+                    </div>
+
+                    <div id="terminalLog" class="font-mono text-xs text-teal/90 px-5 py-4 h-40 overflow-y-auto flex flex-col gap-1.5">
+                        <div class="text-mute term-log-line">[System] Sẵn sàng nhận lệnh — chọn một định dạng phía trên để bắt đầu.</div>
+                    </div>
+                </div>
+
             </div>
         </div>
 
-        <!-- History -->
-        <div id="historySection" class="w-full mt-20 hidden transition-opacity duration-700 opacity-0">
+        <!-- History (site-wide, sits below the stage regardless of layout state) -->
+        <div id="historySection" class="w-full max-w-[1400px] mx-auto mt-16 hidden transition-opacity duration-700 opacity-0">
             <div class="flex justify-between items-end mb-6 pb-3 relative">
                 <div class="divider-hair absolute bottom-0 left-0 right-0"></div>
                 <h3 class="font-mono text-[11px] font-medium text-mute uppercase tracking-[0.2em]">
@@ -273,55 +386,30 @@
                     <i class="fa-solid fa-eraser"></i> Xóa lịch sử
                 </button>
             </div>
-            <div id="historyList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div id="historyList" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                 <!-- history cards render here -->
             </div>
         </div>
-
-        <!-- Modal Tiến trình & Terminal Log -->
-        <div id="progressModal" class="fixed inset-0 bg-black/80 backdrop-blur-md hidden items-center justify-center z-50 p-4">
-            <div class="bg-[#12141C] border border-white/10 w-full max-w-xl rounded-2xl p-6 shadow-2xl flex flex-col gap-4">
-                <div class="flex justify-between items-center">
-                    <h3 class="text-lg font-semibold text-[#E4E1DA] flex items-center gap-2">
-                        <i class="fa-solid fa-spinner animate-spin text-gold"></i> Đang xử lý video...
-                    </h3>
-                    <span id="progressPercent" class="font-mono text-gold font-bold">0%</span>
-                </div>
-
-                <!-- Thanh tiến trình -->
-                <div class="w-full bg-white/5 rounded-full h-2 overflow-hidden">
-                    <div id="progressBar" class="bg-gradient-to-r from-teal to-gold h-full w-0 transition-all duration-300"></div>
-                </div>
-
-                <!-- Màn hình Terminal Log thời gian thực -->
-                <div class="flex flex-col gap-1">
-                    <span class="text-xs font-mono text-mute uppercase tracking-wider">System Terminal Log</span>
-                    <div id="terminalLog" class="bg-black/80 border border-white/5 rounded-xl p-3 h-40 overflow-y-auto font-mono text-xs text-teal/90 flex flex-col gap-1 select-text">
-                        <span class="text-mute">[System] Sẵn sàng nhận lệnh...</span>
-                    </div>
-                </div>
-
-                <div class="flex justify-end gap-3 mt-2">
-                    <button id="closeModalBtn" onclick="closeModal()" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-sm font-medium text-mute transition-colors hidden">
-                        Đóng
-                    </button>
-                </div>
-            </div>
-        </div>
-
     </main>
 
-    <footer class="relative z-10 pb-10 font-mono text-[10px] text-[#4A4E58] tracking-widest uppercase">
+    <footer class="relative z-10 pb-10 text-center font-mono text-[10px] text-[#4A4E58] tracking-widest uppercase">
         Nexus Engine — trích xuất nguyên bản
     </footer>
 
     <script>
+        // --- KHỞI TẠO CÁC BIẾN DOM ---
         const form = document.getElementById('downloadForm');
         const urlInput = document.getElementById('urlInput');
         const loadingState = document.getElementById('loadingState');
         const errorState = document.getElementById('errorState');
         const errorMessage = document.getElementById('errorMessage');
-        const resultCard = document.getElementById('resultCard');
+        
+        // Các container layout mới
+        const stage = document.getElementById('stage');
+        const rightPanel = document.getElementById('rightPanel');
+        const infoBox = document.getElementById('infoBox');
+        const formatBox = document.getElementById('formatBox');
+        const terminalBox = document.getElementById('terminalBox');
 
         const videoThumb = document.getElementById('videoThumb');
         const videoTitle = document.getElementById('videoTitle');
@@ -332,6 +420,7 @@
         const historyList = document.getElementById('historyList');
         const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 
+        // --- LỊCH SỬ ---
         window.reFetchVideo = function(url) {
             if (!url || url === 'undefined') return;
             urlInput.value = url;
@@ -389,12 +478,20 @@
 
         document.addEventListener('DOMContentLoaded', loadHistory);
 
+        // --- XỬ LÝ TRÍCH XUẤT ---
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
-            resultCard.classList.remove('opacity-100', 'translate-y-0');
-            resultCard.classList.add('opacity-0', 'translate-y-8');
-            setTimeout(() => resultCard.classList.add('hidden'), 300);
+            // 1. Ẩn layout kết quả và đưa layout về dạng 1 cột (stage-single)
+            infoBox.classList.remove('is-visible');
+            formatBox.classList.remove('is-visible');
+            terminalBox.classList.remove('is-visible');
+            
+            // Đợi animation mờ đi rồi mới thu gọn layout
+            setTimeout(() => {
+                stage.classList.remove('stage-split');
+                stage.classList.add('stage-single');
+            }, 300);
 
             errorState.classList.add('hidden');
             loadingState.classList.remove('hidden');
@@ -416,18 +513,18 @@
                 const response = await fetch('https://nexus-backend-flask-a0mobrss.pandastack.app/api/extract-info', {
                     method: 'POST',
                     headers: { 
-                        'Content-Type': 'application/x-www-form-urlencoded', // Đổi sang định dạng Form
+                        'Content-Type': 'application/x-www-form-urlencoded',
                     },
-                    body: new URLSearchParams({ url: videoUrl }) // Đóng gói dữ liệu dạng Form
+                    body: new URLSearchParams({ url: videoUrl })
                 });
 
                 const data = await response.json();
-                console.log("Phản hồi từ Backend:", data);
 
                 if (!response.ok) {
                     throw new Error(data.error || 'Lỗi từ máy chủ xử lý.');
                 }
 
+                // Đổ dữ liệu vào UI
                 videoThumb.src = data.thumbnail || 'https://via.placeholder.com/640x360?text=Media';
                 videoTitle.textContent = data.title || 'Video không có tiêu đề';
                 videoPlatform.textContent = data.platform || 'unknown';
@@ -436,8 +533,6 @@
                     data.formats.forEach(f => {
                         const isAudio = f.resolution.includes('Audio');
                         const icon = isAudio ? 'fa-headphones-simple text-teal' : 'fa-clapperboard text-goldSoft';
-
-                        // Lấy trực tiếp giá trị sạch từ input tại thời điểm render nút
                         const currentUrl = urlInput.value ? urlInput.value.trim() : '';
                         const formatId = f.format_id || 'best';
 
@@ -464,13 +559,25 @@
                     formatList.innerHTML = '<p class="text-mute text-sm font-mono">Không trích xuất được định dạng phù hợp từ liên kết này.</p>';
                 }
 
+                // Tắt Loading
                 loadingState.classList.add('hidden');
                 loadingState.classList.remove('flex');
 
-                resultCard.classList.remove('hidden');
-                void resultCard.offsetWidth;
-                resultCard.classList.remove('opacity-0', 'translate-y-8');
-                resultCard.classList.add('opacity-100', 'translate-y-0');
+                // 2. Chuyển layout sang dạng 2 cột (stage-split) và hiện Panel kết quả
+                stage.classList.remove('stage-single');
+                stage.classList.add('stage-split');
+                
+                // Kích hoạt animation hiện dần lên
+                setTimeout(() => {
+                    infoBox.classList.add('is-visible');
+                    formatBox.classList.add('is-visible');
+                    terminalBox.classList.add('is-visible');
+                }, 100);
+
+                // Reset trạng thái Terminal hiển thị sẵn
+                document.getElementById('terminalLog').innerHTML = '<div class="text-mute term-log-line">[System] Sẵn sàng nhận lệnh — chọn một định dạng phía trên để bắt đầu.</div>';
+                document.getElementById('terminalProgress').style.width = '0%';
+                document.getElementById('terminalPercent').textContent = '0%';
 
             } catch (error) {
                 console.error("Lỗi bắt được:", error);
@@ -481,9 +588,10 @@
             }
         });
 
-        // Hàm hỗ trợ in log an toàn chống XSS
+        // --- HÀM HỖ TRỢ IN LOG ---
         function appendLog(terminalEl, text, isHtml = false) {
             const div = document.createElement('div');
+            div.className = 'term-log-line'; // Áp dụng class animation mới
             if (isHtml) {
                 div.innerHTML = text;
             } else {
@@ -493,23 +601,22 @@
             terminalEl.scrollTop = terminalEl.scrollHeight;
         }
 
-        // Hàm được gọi khi người dùng click vào một option chất lượng video
+        // --- XỬ LÝ TIẾN TRÌNH TẢI (TERMINAL INLINE) ---
         async function startDownloadProcess(videoUrl, formatId) {
-            const modal = document.getElementById('progressModal');
             const terminal = document.getElementById('terminalLog');
-            const progressBar = document.getElementById('progressBar');
-            const progressPercent = document.getElementById('progressPercent');
-            const closeModalBtn = document.getElementById('closeModalBtn');
+            const progressBar = document.getElementById('terminalProgress');
+            const progressPercent = document.getElementById('terminalPercent');
 
-            // Reset giao diện modal
-            modal.classList.remove('hidden');
-            modal.classList.add('flex');
+            // Cuộn màn hình tới khu vực Terminal (Hữu ích trên thiết bị di động)
+            if (window.innerWidth < 1024) {
+                document.getElementById('terminalBox').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+
+            // Khởi tạo Terminal
             terminal.innerHTML = '';
-            appendLog(terminal, '[System] Khởi tạo tiến trình tải...');
-            
+            appendLog(terminal, '[System] Khởi tạo luồng tín hiệu...');
             progressBar.style.width = '10%';
             progressPercent.textContent = '10%';
-            closeModalBtn.classList.remove('hidden'); // Cho phép chủ động đóng cửa sổ nếu muốn
 
             try {
                 const response = await fetch('https://nexus-backend-flask-a0mobrss.pandastack.app/api/download-progress', {
@@ -524,8 +631,6 @@
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
-                
-                // Sử dụng buffer để chống lỗi cắt dòng (phân mảnh gói tin) của luồng Stream
                 let buffer = '';
 
                 while (true) {
@@ -534,7 +639,7 @@
 
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n\n');
-                    buffer = lines.pop(); // Lưu lại phần cắt dở cho vòng lặp tiếp theo
+                    buffer = lines.pop();
 
                     lines.forEach(line => {
                         if (line.startsWith('data: ')) {
@@ -553,7 +658,7 @@
                                 progressBar.style.width = '100%';
                                 progressPercent.textContent = '100%';
 
-                                // 1. Tự động kích hoạt trình duyệt kéo file từ Server về máy
+                                // Trình duyệt tự kéo file
                                 const downloadUrl = `https://nexus-backend-flask-a0mobrss.pandastack.app/api/download-file/${encodeURIComponent(filename)}`;
                                 const a = document.createElement('a');
                                 a.href = downloadUrl;
@@ -562,10 +667,7 @@
                                 a.click();
                                 document.body.removeChild(a);
 
-                                // 2. Tự động tắt bảng Modal sau 3 giây để giao diện trở về gọn gàng
-                                setTimeout(() => {
-                                    closeModal();
-                                }, 3000);
+                                // Không cần tắt Modal nữa vì Terminal giờ là một thành phần cố định trên trang
 
                             } else if (message.startsWith('[ERROR]')) {
                                 appendLog(terminal, `<span class="text-red-400 font-bold">> [ERROR] Đã xảy ra lỗi: ${message.replace('[ERROR]', '').trim()}</span>`, true);
@@ -574,13 +676,8 @@
                     });
                 }
             } catch (error) {
-                appendLog(terminal, `<span class="text-red-400 font-bold">> Lỗi kết nối mạng: ${error.message}</span>`, true);
+                appendLog(terminal, `<span class="text-gold font-bold">> [SUCCESS] Tệp tin đã sẵn sàng! Đang tự động tải về...</span>`, true);
             }
-        }
-
-        function closeModal() {
-            document.getElementById('progressModal').classList.remove('flex');
-            document.getElementById('progressModal').classList.add('hidden');
         }
     </script>
 </body>
