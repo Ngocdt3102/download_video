@@ -632,6 +632,7 @@
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
+                let shouldBreak = false;
 
                 while (true) {
                     const { value, done } = await reader.read();
@@ -658,17 +659,26 @@
                                 progressBar.style.width = '100%';
                                 progressPercent.textContent = '100%';
 
-                                // Trình duyệt tự kéo file (PHIÊN BẢN MỚI CHỐNG LỖI QUIC VÀ CACHE)
+                                // 1. Tạo đường dẫn tải xuống (Kèm mã thời gian chống Cache)
                                 const downloadUrl = `https://nexus-backend-flask-a0mobrss.pandastack.app/api/download-file/${encodeURIComponent(filename)}?t=${new Date().getTime()}`;
-                                window.location.href = downloadUrl;
                                 
-                                // Không cần tắt Modal nữa vì Terminal giờ là một thành phần cố định trên trang
+                                // 2. Tải ngầm bằng thẻ <a> để trình duyệt không bị giật mình ngắt kết nối (Chống lỗi QUIC)
+                                const a = document.createElement('a');
+                                a.href = downloadUrl;
+                                a.download = filename;
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
 
+                                // 3. RẤT QUAN TRỌNG: Đặt flag để thoát vòng lặp, đóng luồng API gọn gàng
+                                shouldBreak = true;
                             } else if (message.startsWith('[ERROR]')) {
                                 appendLog(terminal, `<span class="text-red-400 font-bold">> [ERROR] Đã xảy ra lỗi: ${message.replace('[ERROR]', '').trim()}</span>`, true);
                             }
                         }
                     });
+
+                    if (shouldBreak) break;
                 }
             } catch (error) {
                 appendLog(terminal, `<span class="text-gold font-bold">> [SUCCESS] Tệp tin đã sẵn sàng! Đang tự động tải về...</span>`, true);
