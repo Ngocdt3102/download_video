@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response, send_from_directory
+from flask import Flask, request, jsonify, Response, send_file
 from flask_cors import CORS
 import yt_dlp
 import os
@@ -10,7 +10,8 @@ import shutil
 ffmpeg_exe = shutil.which('ffmpeg')
 try:
     import imageio_ffmpeg
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    if not ffmpeg_exe:
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 except Exception:
     pass
 # -------------------------------------------------------
@@ -105,9 +106,28 @@ def extract_info():
         return jsonify({"error": f"Không thể phân tích video: {str(e)}"}), 500
 
 
+# --- ROUTE TẢI FILE: ĐÃ TÍCH HỢP CHỐNG LỖI QUIC VÀ VƯỢT TƯỜNG LỬA ---
 @app.route('/api/download-file/<path:filename>', methods=['GET'])
 def download_file(filename):
-    return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
+    file_path = os.path.join(DOWNLOAD_DIR, filename)
+    
+    if not os.path.exists(file_path):
+        return jsonify({"error": "File không tồn tại hoặc đã bị xóa"}), 404
+        
+    try:
+        # Ép kiểu mimetype thành 'application/octet-stream' (dữ liệu thô) 
+        # Để qua mặt Firewall của Cloud chuyên chặn stream file MP3
+        response = send_file(
+            file_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/octet-stream'
+        )
+        # Tắt bộ nhớ đệm (Cache) để tránh đụng độ giao thức QUIC
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return response
+    except Exception as e:
+        return str(e), 500
 
 
 @app.route('/api/download-progress', methods=['POST'])
@@ -135,7 +155,6 @@ def download_progress():
             ydl_format = 'bestaudio/b/best' if is_audio_only else (f"{format_id}/b/best" if format_id != 'best' else 'b/best')
         else:
             yield f"data: [LOG] Đã kích hoạt lõi FFmpeg chống sập RAM...\n\n"
-            # TikTok không có Audio riêng, nên ta tải file Video tốt nhất về để tự cắt tiếng
             ydl_format = 'b/best' if is_audio_only else (f"{format_id}+bestaudio/{format_id}/b/best" if format_id != 'best' else 'bestvideo+bestaudio/b/best')
 
         ydl_opts = {
@@ -143,6 +162,8 @@ def download_progress():
             'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
+            # Ép yt-dlp nhận diện FFmpeg một cách bắt buộc
+            'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
             # Bắt buộc yt-dlp gộp video (nếu có) bằng 1 luồng để tiết kiệm RAM
             'postprocessor_args': ['-threads', '1'] 
         }

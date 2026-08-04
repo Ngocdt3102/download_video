@@ -654,19 +654,14 @@
                             } else if (message.startsWith('[SUCCESS]')) {
                                 const filename = message.replace('[SUCCESS]', '').trim();
                                 
-                                appendLog(terminal, `<span class="text-gold font-bold">> [SUCCESS] Video đã sẵn sàng! Đang tự động tải về...</span>`, true);
+                                appendLog(terminal, `<span class="text-gold font-bold">> [SUCCESS] Tệp tin đã sẵn sàng! Đang tự động tải về...</span>`, true);
                                 progressBar.style.width = '100%';
                                 progressPercent.textContent = '100%';
 
-                                // Trình duyệt tự kéo file
-                                const downloadUrl = `https://nexus-backend-flask-a0mobrss.pandastack.app/api/download-file/${encodeURIComponent(filename)}`;
-                                const a = document.createElement('a');
-                                a.href = downloadUrl;
-                                a.download = '';
-                                document.body.appendChild(a);
-                                a.click();
-                                document.body.removeChild(a);
-
+                                // Trình duyệt tự kéo file (PHIÊN BẢN MỚI CHỐNG LỖI QUIC VÀ CACHE)
+                                const downloadUrl = `https://nexus-backend-flask-a0mobrss.pandastack.app/api/download-file/${encodeURIComponent(filename)}?t=${new Date().getTime()}`;
+                                window.location.href = downloadUrl;
+                                
                                 // Không cần tắt Modal nữa vì Terminal giờ là một thành phần cố định trên trang
 
                             } else if (message.startsWith('[ERROR]')) {
