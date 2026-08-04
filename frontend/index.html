@@ -631,19 +631,22 @@
                 : 'https://nexus-backend-flask-a0mobrss.pandastack.app/api/download/video';
 
             try {
-                const response = await fetch(endpoint, {
-                    method: 'POST',
+                // Đóng gói dữ liệu vào thanh URL (Query Parameters) thay vì dùng Body của POST
+                const targetUrl = new URL(endpoint);
+                targetUrl.searchParams.append('url', videoUrl);
+                if (formatId !== 'bestaudio') {
+                    targetUrl.searchParams.append('format_id', formatId);
+                }
+
+                // Gửi request bằng GET (Chuẩn vàng của Event Stream để xuyên Tường lửa)
+                const response = await fetch(targetUrl.toString(), {
+                    method: 'GET',
                     headers: { 
-                        'Content-Type': 'application/x-www-form-urlencoded' 
-                    },
-                    // Truyền format_id nếu là video, nếu là audio thì chỉ cần url
-                    body: new URLSearchParams(
-                        formatId === 'bestaudio' ? { url: videoUrl } : { url: videoUrl, format_id: formatId }
-                    )
+                        'Accept': 'text/event-stream' 
+                    }
                 });
 
                 if (!response.ok) {
-                    // Xử lý lỗi 429 nếu bị Flask-Limiter chặn
                     if (response.status === 429) throw new Error("Bạn đang tải quá nhanh, vui lòng chờ 1 phút!");
                     throw new Error("Không thể kết nối đến máy chủ xử lý.");
                 }
