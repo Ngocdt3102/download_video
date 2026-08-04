@@ -198,7 +198,13 @@ def download_video():
             except queue.Empty:
                 yield f"data: [LOG] Đang xử lý Video... (Vui lòng không đóng trang)\n\n"
 
-    return Response(generate_logs(), mimetype='text/event-stream')
+    # Bùa chú chống Cache và ép tường lửa xả bộ đệm liên tục
+    headers = {
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
+        'Connection': 'keep-alive'
+    }
+    return Response(generate_logs(), mimetype='text/event-stream', headers=headers)
 
 
 # =====================================================================
@@ -279,7 +285,13 @@ def download_audio():
             except queue.Empty:
                 yield f"data: [LOG] Đang xử lý Audio... (Vui lòng không đóng trang)\n\n"
 
-    return Response(generate_logs(), mimetype='text/event-stream')
+    # Bùa chú chống Cache và ép tường lửa xả bộ đệm liên tục
+    headers = {
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
+        'Connection': 'keep-alive'
+    }
+    return Response(generate_logs(), mimetype='text/event-stream', headers=headers)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
