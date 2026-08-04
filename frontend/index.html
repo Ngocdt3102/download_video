@@ -607,7 +607,14 @@
             const progressBar = document.getElementById('terminalProgress');
             const progressPercent = document.getElementById('terminalPercent');
 
-            // Cuộn màn hình tới khu vực Terminal (Hữu ích trên thiết bị di động)
+            // [CHỐNG SPAM 1] Khóa tất cả các nút tải định dạng để người dùng không bấm liên tục
+            const formatButtons = document.querySelectorAll('#formatList button');
+            formatButtons.forEach(btn => {
+                btn.disabled = true;
+                btn.classList.add('opacity-50', 'cursor-not-allowed');
+            });
+
+            // Cuộn màn hình tới khu vực Terminal
             if (window.innerWidth < 1024) {
                 document.getElementById('terminalBox').scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
@@ -618,16 +625,28 @@
             progressBar.style.width = '10%';
             progressPercent.textContent = '10%';
 
+            // [CẬP NHẬT API] Phân luồng Video và Audio
+            let endpoint = formatId === 'bestaudio' 
+                ? 'https://nexus-backend-flask-a0mobrss.pandastack.app/api/download/audio' 
+                : 'https://nexus-backend-flask-a0mobrss.pandastack.app/api/download/video';
+
             try {
-                const response = await fetch('https://nexus-backend-flask-a0mobrss.pandastack.app/api/download-progress', {
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 
                         'Content-Type': 'application/x-www-form-urlencoded' 
                     },
-                    body: new URLSearchParams({ url: videoUrl, format_id: formatId })
+                    // Truyền format_id nếu là video, nếu là audio thì chỉ cần url
+                    body: new URLSearchParams(
+                        formatId === 'bestaudio' ? { url: videoUrl } : { url: videoUrl, format_id: formatId }
+                    )
                 });
 
-                if (!response.ok) throw new Error("Không thể kết nối đến máy chủ xử lý.");
+                if (!response.ok) {
+                    // Xử lý lỗi 429 nếu bị Flask-Limiter chặn
+                    if (response.status === 429) throw new Error("Bạn đang tải quá nhanh, vui lòng chờ 1 phút!");
+                    throw new Error("Không thể kết nối đến máy chủ xử lý.");
+                }
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -659,10 +678,8 @@
                                 progressBar.style.width = '100%';
                                 progressPercent.textContent = '100%';
 
-                                // 1. Tạo đường dẫn tải xuống (Kèm mã thời gian chống Cache)
                                 const downloadUrl = `https://nexus-backend-flask-a0mobrss.pandastack.app/api/download-file/${encodeURIComponent(filename)}?t=${new Date().getTime()}`;
                                 
-                                // 2. Tải ngầm bằng thẻ <a> để trình duyệt không bị giật mình ngắt kết nối (Chống lỗi QUIC)
                                 const a = document.createElement('a');
                                 a.href = downloadUrl;
                                 a.download = filename;
@@ -670,10 +687,10 @@
                                 a.click();
                                 document.body.removeChild(a);
 
-                                // 3. RẤT QUAN TRỌNG: Đặt flag để thoát vòng lặp, đóng luồng API gọn gàng
                                 shouldBreak = true;
                             } else if (message.startsWith('[ERROR]')) {
                                 appendLog(terminal, `<span class="text-red-400 font-bold">> [ERROR] Đã xảy ra lỗi: ${message.replace('[ERROR]', '').trim()}</span>`, true);
+                                shouldBreak = true; // Thoát luồng nếu có lỗi từ backend
                             }
                         }
                     });
@@ -681,7 +698,14 @@
                     if (shouldBreak) break;
                 }
             } catch (error) {
-                appendLog(terminal, `<span class="text-gold font-bold">> [SUCCESS] Tệp tin đã sẵn sàng! Đang tự động tải về...</span>`, true);
+                // [FIX LỖI NGHIÊM TRỌNG] Hiển thị đúng thông báo lỗi thay vì Success
+                appendLog(terminal, `<span class="text-red-400 font-bold">> [LỖI HỆ THỐNG] ${error.message}</span>`, true);
+            } finally {
+                // [CHỐNG SPAM 2] Mở khóa lại các nút sau khi tiến trình hoàn tất (dù thành công hay thất bại)
+                formatButtons.forEach(btn => {
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                });
             }
         }
     </script>
