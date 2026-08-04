@@ -136,13 +136,16 @@ def download_file(filename):
 
 
 # =====================================================================
-# HÀM 1: CHUYÊN XỬ LÝ TẢI VIDEO (MP4)
+# HÀM 1: CHUYÊN XỬ LÝ TẢI VIDEO (MP4, WEBM, MKV...)
 # =====================================================================
 @app.route('/api/download/video', methods=['GET', 'POST'])
 @limiter.limit("3 per minute") # Tối đa 3 video/phút mỗi IP
 def download_video():
     url = request.args.get('url') if request.method == 'GET' else request.form.get('url')
     format_id = request.args.get('format_id', 'best') if request.method == 'GET' else request.form.get('format_id', 'best')
+    
+    # [TÍNH NHẤT QUÁN] Bắt định dạng mục tiêu từ Frontend gửi lên (mặc định là mp4)
+    expected_ext = request.args.get('ext', 'mp4') if request.method == 'GET' else request.form.get('ext', 'mp4')
 
     if not url:
         return jsonify({"error": "Thiếu URL video"}), 400
@@ -155,18 +158,24 @@ def download_video():
             try: q.put(f"data: [PROGRESS] {float(p_clean)}\n\n")
             except ValueError: pass
         elif d['status'] == 'finished':
-            q.put(f"data: [LOG] Tải xuống hoàn tất, đang đóng gói Video...\n\n")
+            q.put(f"data: [LOG] Đang xử lý và hợp nhất các phân mảnh...\n\n")
 
     def run_download_thread():
         ydl_format = f"{format_id}+bestaudio/best" if format_id != 'best' else 'bestvideo+bestaudio/best'
         ydl_opts = {
             'format': ydl_format,
+            'merge_output_format': expected_ext, # 1. Ưu tiên ghép thành định dạng người dùng chọn
             'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
             'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
             'postprocessor_args': ['-threads', '1'],
             'progress_hooks': [progress_hook],
+            'postprocessors': [{
+                # 2. KHÓA CHẶT: Bắt buộc chuyển đổi về đúng chuẩn UI yêu cầu (tránh lỗi ra MKV)
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': expected_ext, 
+            }],
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
                 'Accept-Language': 'en-us,en;q=0.5',
@@ -176,7 +185,9 @@ def download_video():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
-                q.put(f"DONE:{os.path.basename(filename)}")
+                # Đảm bảo lấy đúng đuôi file đã bị ép chuyển đổi
+                output_filename = os.path.splitext(filename)[0] + f'.{expected_ext}'
+                q.put(f"DONE:{os.path.basename(output_filename)}")
         except Exception as e:
             q.put(f"ERROR:{str(e)}")
 
@@ -185,9 +196,11 @@ def download_video():
         yield f"data: [LOG] Khởi tạo luồng xử lý VIDEO...\n\n"
         threading.Thread(target=run_download_thread).start()
         
+        ping_count = 0
         while True:
             try:
-                msg = q.get(timeout=10)
+                # [BƠM OXY TƯỜNG LỬA] Đợi log tối đa 1 giây
+                msg = q.get(timeout=1)
                 if msg.startswith("DONE:"):
                     yield f"data: [PROGRESS] 100\n\ndata: [SUCCESS] {msg.split(':', 1)[1]}\n\n"
                     break
@@ -196,7 +209,12 @@ def download_video():
                     break
                 else: yield msg
             except queue.Empty:
-                yield f"data: [LOG] Đang xử lý Video... (Vui lòng không đóng trang)\n\n"
+                # Nhịp tim ngầm mỗi 1 giây để giữ kết nối SSE không bị ngắt
+                yield ":ping\n\n"
+                ping_count += 1
+                if ping_count >= 10:
+                    yield f"data: [LOG] Đang xử lý Video... (Vui lòng không đóng trang)\n\n"
+                    ping_count = 0
 
     # Bùa chú chống Cache và ép tường lửa xả bộ đệm liên tục
     headers = {
@@ -208,12 +226,15 @@ def download_video():
 
 
 # =====================================================================
-# HÀM 2: CHUYÊN XỬ LÝ TẢI AUDIO (MP3)
+# HÀM 2: CHUYÊN XỬ LÝ TẢI AUDIO (MP3, M4A...)
 # =====================================================================
 @app.route('/api/download/audio', methods=['GET', 'POST'])
 @limiter.limit("3 per minute") # Tối đa 3 audio/phút mỗi IP
 def download_audio():
     url = request.args.get('url') if request.method == 'GET' else request.form.get('url')
+    
+    # [TÍNH NHẤT QUÁN] Mặc định là mp3 nếu Frontend không truyền
+    expected_ext = request.args.get('ext', 'mp3') if request.method == 'GET' else request.form.get('ext', 'mp3')
 
     if not url:
         return jsonify({"error": "Thiếu URL âm thanh"}), 400
@@ -226,7 +247,7 @@ def download_audio():
             try: q.put(f"data: [PROGRESS] {float(p_clean)}\n\n")
             except ValueError: pass
         elif d['status'] == 'finished':
-            q.put(f"data: [LOG] Tải xuống hoàn tất, chuẩn bị bóc tách MP3...\n\n")
+            q.put(f"data: [LOG] Tải xuống hoàn tất, chuẩn bị bóc tách {expected_ext.upper()}...\n\n")
 
     def run_download_thread():
         ydl_opts = {
@@ -235,33 +256,28 @@ def download_audio():
             'quiet': True,
             'no_warnings': True,
             'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
+            'postprocessor_args': ['-threads', '1'], # Bơm 1 luồng cho FFmpeg để không sập RAM
             'progress_hooks': [progress_hook],
+            'postprocessors': [{
+                # [DỌN CODE] Giao toàn bộ việc ép MP3 cho yt-dlp tự động làm
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': expected_ext,
+                'preferredquality': '192',
+            }],
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
             }
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                base_filename = os.path.basename(filename)
+                q.put(f"data: [LOG] Đang chuyển đổi sang định dạng {expected_ext.upper()} (Chạy ngầm 1 luồng)...\n\n")
                 
-                # Ép nén MP3 an toàn cho RAM
-                if ffmpeg_exe:
-                    q.put("data: [LOG] Đang chuyển đổi sang định dạng MP3 (Chạy ngầm 1 luồng)...\n\n")
-                    mp3_filename = os.path.splitext(filename)[0] + '.mp3'
-                    try:
-                        subprocess.run([
-                            ffmpeg_exe, '-y', '-i', filename,
-                            '-vn', '-acodec', 'libmp3lame', '-b:a', '192k',
-                            '-threads', '1', mp3_filename
-                        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        
-                        if os.path.exists(filename) and filename != mp3_filename:
-                            os.remove(filename)
-                        base_filename = os.path.basename(mp3_filename)
-                    except subprocess.CalledProcessError:
-                        q.put("data: [LOG] LỖI: Bóc tách thất bại, trả về file gốc...\n\n")
+                info = ydl.extract_info(url, download=True)
+                final_filename = ydl.prepare_filename(info)
+                
+                # Sau khi postprocessors chạy xong, tệp sẽ đổi đuôi theo expected_ext
+                output_filename = os.path.splitext(final_filename)[0] + f'.{expected_ext}'
+                base_filename = os.path.basename(output_filename)
 
                 q.put(f"DONE:{base_filename}")
         except Exception as e:
@@ -272,9 +288,11 @@ def download_audio():
         yield f"data: [LOG] Khởi tạo luồng xử lý AUDIO...\n\n"
         threading.Thread(target=run_download_thread).start()
         
+        ping_count = 0
         while True:
             try:
-                msg = q.get(timeout=10)
+                # [BƠM OXY TƯỜNG LỬA] Đợi log tối đa 1 giây
+                msg = q.get(timeout=1)
                 if msg.startswith("DONE:"):
                     yield f"data: [PROGRESS] 100\n\ndata: [SUCCESS] {msg.split(':', 1)[1]}\n\n"
                     break
@@ -283,7 +301,12 @@ def download_audio():
                     break
                 else: yield msg
             except queue.Empty:
-                yield f"data: [LOG] Đang xử lý Audio... (Vui lòng không đóng trang)\n\n"
+                # Nhịp tim ngầm mỗi 1 giây để giữ kết nối SSE không bị ngắt
+                yield ":ping\n\n"
+                ping_count += 1
+                if ping_count >= 10:
+                    yield f"data: [LOG] Đang xử lý Audio... (Vui lòng không đóng trang)\n\n"
+                    ping_count = 0
 
     # Bùa chú chống Cache và ép tường lửa xả bộ đệm liên tục
     headers = {

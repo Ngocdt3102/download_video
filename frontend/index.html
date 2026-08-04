@@ -602,7 +602,8 @@
         }
 
         // --- XỬ LÝ TIẾN TRÌNH TẢI (TERMINAL INLINE) ---
-        async function startDownloadProcess(videoUrl, formatId) {
+        // [CẬP NHẬT]: Thêm tham số ext (mặc định là mp4) vào hàm
+        async function startDownloadProcess(videoUrl, formatId, ext = 'mp4') {
             const terminal = document.getElementById('terminalLog');
             const progressBar = document.getElementById('terminalProgress');
             const progressPercent = document.getElementById('terminalPercent');
@@ -625,17 +626,24 @@
             progressBar.style.width = '10%';
             progressPercent.textContent = '10%';
 
-            // [CẬP NHẬT API] Phân luồng Video và Audio
+            // Phân luồng Video và Audio
             let endpoint = formatId === 'bestaudio' 
                 ? 'https://nexus-backend-flask-a0mobrss.pandastack.app/api/download/audio' 
                 : 'https://nexus-backend-flask-a0mobrss.pandastack.app/api/download/video';
 
             try {
-                // Đóng gói dữ liệu vào thanh URL (Query Parameters) thay vì dùng Body của POST
+                // Đóng gói dữ liệu vào thanh URL (Query Parameters)
                 const targetUrl = new URL(endpoint);
                 targetUrl.searchParams.append('url', videoUrl);
-                if (formatId !== 'bestaudio') {
+                
+                // [CẬP NHẬT QUAN TRỌNG]: Nhồi thêm đuôi ext vào để Backend ép chuẩn định dạng
+                if (formatId === 'bestaudio') {
+                    // Nếu là nút Audio, luôn báo cho backend ép ra MP3
+                    targetUrl.searchParams.append('ext', 'mp3'); 
+                } else {
                     targetUrl.searchParams.append('format_id', formatId);
+                    // Nếu là Video, truyền chính xác định dạng hiển thị trên UI (mp4, webm, v.v.)
+                    targetUrl.searchParams.append('ext', ext); 
                 }
 
                 // Gửi request bằng GET (Chuẩn vàng của Event Stream để xuyên Tường lửa)
@@ -701,10 +709,10 @@
                     if (shouldBreak) break;
                 }
             } catch (error) {
-                // [FIX LỖI NGHIÊM TRỌNG] Hiển thị đúng thông báo lỗi thay vì Success
+                // Hiển thị đúng thông báo lỗi
                 appendLog(terminal, `<span class="text-red-400 font-bold">> [LỖI HỆ THỐNG] ${error.message}</span>`, true);
             } finally {
-                // [CHỐNG SPAM 2] Mở khóa lại các nút sau khi tiến trình hoàn tất (dù thành công hay thất bại)
+                // [CHỐNG SPAM 2] Mở khóa lại các nút sau khi tiến trình hoàn tất
                 formatButtons.forEach(btn => {
                     btn.disabled = false;
                     btn.classList.remove('opacity-50', 'cursor-not-allowed');
