@@ -9,6 +9,7 @@ import shutil
 import queue
 import threading
 import re
+import shutil
 
 ffmpeg_exe = shutil.which('ffmpeg')
 try:
@@ -256,6 +257,8 @@ def download_audio():
             q.put(f"data: [LOG] Tải xuống hoàn tất, chuẩn bị bóc tách {expected_ext.upper()}...\n\n")
 
     def run_download_thread():
+        
+        check_and_cleanup_storage()
         # [MẮT THẦN TIKTOK]: Nhận diện link TikTok/Douyin để tải file gộp sau đó bóc tách thủ công
         is_tiktok = 'tiktok.com' in url or 'douyin.com' in url
         ydl_format = 'best' if is_tiktok else 'bestaudio/best'
@@ -344,6 +347,42 @@ def download_audio():
         'Connection': 'keep-alive'
     }
     return Response(generate_logs(), mimetype='text/event-stream', headers=headers)
+
+# Ngưỡng giới hạn ổ cứng cho phép: 100MB (vì ổ cứng trên Free tier rất nhỏ)
+MAX_ALLOWED_FOLDER_SIZE = 100 * 1024 * 1024 
+
+def check_and_cleanup_storage():
+    """Kiểm tra tổng dung lượng thư mục downloads, nếu quá 100MB sẽ xóa bớt file cũ"""
+    try:
+        if not os.path.exists(DOWNLOAD_DIR):
+            return
+
+        total_size = 0
+        file_list = []
+
+        for filename in os.listdir(DOWNLOAD_DIR):
+            file_path = os.path.join(DOWNLOAD_DIR, filename)
+            if os.path.isfile(file_path):
+                file_size = os.path.getsize(file_path)
+                file_mtime = os.path.getmtime(file_path)
+                total_size += file_size
+                file_list.append({'path': file_path, 'mtime': file_mtime, 'size': file_size})
+
+        if total_size > MAX_ALLOWED_FOLDER_SIZE:
+            print(f"[Storage Warning] Thư mục downloads vượt quá 100MB. Đang dọn dẹp...")
+            file_list.sort(key=lambda x: x['mtime'])
+
+            for file_info in file_list:
+                if total_size <= MAX_ALLOWED_FOLDER_SIZE:
+                    break
+                try:
+                    os.remove(file_info['path'])
+                    total_size -= file_info['size']
+                    print(f"[Auto-Clean] Đã xóa file cũ: {os.path.basename(file_info['path'])}")
+                except Exception as ex:
+                    print(f"[Auto-Clean Error]: {ex}")
+    except Exception as e:
+        print(f"[Storage Check Error]: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
