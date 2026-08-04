@@ -136,16 +136,11 @@ def download_file(filename):
         return str(e), 500
 
 
-# =====================================================================
-# HÀM 1: CHUYÊN XỬ LÝ TẢI VIDEO (Hỗ trợ tốt YouTube, TikTok...)
-# =====================================================================
 @app.route('/api/download/video', methods=['GET', 'POST'])
-@limiter.limit("3 per minute") # Tối đa 3 video/phút mỗi IP
+@limiter.limit("3 per minute")
 def download_video():
     url = request.args.get('url') if request.method == 'GET' else request.form.get('url')
     format_id = request.args.get('format_id', 'best') if request.method == 'GET' else request.form.get('format_id', 'best')
-    
-    # [TÍNH NHẤT QUÁN] Bắt định dạng mục tiêu từ Frontend gửi lên (mặc định là mp4)
     expected_ext = request.args.get('ext', 'mp4') if request.method == 'GET' else request.form.get('ext', 'mp4')
 
     if not url:
@@ -162,39 +157,38 @@ def download_video():
             q.put(f"data: [LOG] Đang xử lý và hợp nhất các phân mảnh...\n\n")
 
     def run_download_thread():
-        # [MẮT THẦN TIKTOK]: Nhận diện link TikTok/Douyin để chọn cơ chế tải gộp sẵn tiếng
+        check_and_cleanup_storage()
         is_tiktok = 'tiktok.com' in url or 'douyin.com' in url
-        ydl_format = 'best' if is_tiktok else (f"{format_id}+bestaudio/best" if format_id != 'best' else 'bestvideo+bestaudio/best')
-
-        ydl_opts = {
-            'format': ydl_format,
-            'merge_output_format': expected_ext, # 1. Ưu tiên ghép thành định dạng người dùng chọn
-            'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
-            'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
-            'postprocessor_args': ['-threads', '1'],
-            'progress_hooks': [progress_hook],
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-us,en;q=0.5',
-            }
-        }
-
-        # Chỉ áp dụng FFmpegVideoConvertor cho YouTube/nền tảng khác (tránh lỗi ffprobe trên TikTok)
-        if not is_tiktok:
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': expected_ext, 
-            }]
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                # Đảm bảo lấy đúng đuôi file đầu ra
-                output_filename = os.path.splitext(filename)[0] + f'.{expected_ext}'
+            if is_tiktok:
+                output_filename = process_tiktok_download(url, expected_ext, is_audio_only=False)
                 q.put(f"DONE:{os.path.basename(output_filename)}")
+            else:
+                ydl_format = f"{format_id}+bestaudio/best" if format_id != 'best' else 'bestvideo+bestaudio/best'
+                ydl_opts = {
+                    'format': ydl_format,
+                    'merge_output_format': expected_ext,
+                    'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
+                    'quiet': True,
+                    'no_warnings': True,
+                    'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
+                    'postprocessor_args': ['-threads', '1'],
+                    'progress_hooks': [progress_hook],
+                    'postprocessors': [{
+                        'key': 'FFmpegVideoConvertor',
+                        'preferedformat': expected_ext, 
+                    }],
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+                        'Accept-Language': 'en-us,en;q=0.5',
+                    }
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    filename = ydl.prepare_filename(info)
+                    output_filename = os.path.splitext(filename)[0] + f'.{expected_ext}'
+                    q.put(f"DONE:{os.path.basename(output_filename)}")
         except Exception as e:
             q.put(f"ERROR:{str(e)}")
 
@@ -206,7 +200,6 @@ def download_video():
         ping_count = 0
         while True:
             try:
-                # [BƠM OXY TƯỜNG LỬA] Đợi log tối đa 1 giây
                 msg = q.get(timeout=1)
                 if msg.startswith("DONE:"):
                     yield f"data: [PROGRESS] 100\n\ndata: [SUCCESS] {msg.split(':', 1)[1]}\n\n"
@@ -216,31 +209,20 @@ def download_video():
                     break
                 else: yield msg
             except queue.Empty:
-                # Nhịp tim ngầm mỗi 1 giây để giữ kết nối SSE không bị ngắt
                 yield ":ping\n\n"
                 ping_count += 1
                 if ping_count >= 10:
                     yield f"data: [LOG] Đang xử lý Video... (Vui lòng không đóng trang)\n\n"
                     ping_count = 0
 
-    # Bùa chú chống Cache và ép tường lửa xả bộ đệm liên tục
-    headers = {
-        'Cache-Control': 'no-cache, no-transform',
-        'X-Accel-Buffering': 'no',
-        'Connection': 'keep-alive'
-    }
+    headers = {'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'}
     return Response(generate_logs(), mimetype='text/event-stream', headers=headers)
 
 
-# =====================================================================
-# HÀM 2: CHUYÊN XỬ LÝ TẢI AUDIO (Hỗ trợ thủ công 100% chống lỗi ffprobe)
-# =====================================================================
 @app.route('/api/download/audio', methods=['GET', 'POST'])
-@limiter.limit("3 per minute") # Tối đa 3 audio/phút mỗi IP
+@limiter.limit("3 per minute")
 def download_audio():
     url = request.args.get('url') if request.method == 'GET' else request.form.get('url')
-    
-    # [TÍNH NHẤT QUÁN] Mặc định là mp3 nếu Frontend không truyền
     expected_ext = request.args.get('ext', 'mp3') if request.method == 'GET' else request.form.get('ext', 'mp3')
 
     if not url:
@@ -257,61 +239,38 @@ def download_audio():
             q.put(f"data: [LOG] Tải xuống hoàn tất, chuẩn bị bóc tách {expected_ext.upper()}...\n\n")
 
     def run_download_thread():
-        
         check_and_cleanup_storage()
-        # [MẮT THẦN TIKTOK]: Nhận diện link TikTok/Douyin để tải file gộp sau đó bóc tách thủ công
         is_tiktok = 'tiktok.com' in url or 'douyin.com' in url
-        ydl_format = 'best' if is_tiktok else 'bestaudio/best'
-
-        ydl_opts = {
-            'format': ydl_format, 
-            'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
-            'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
-            'progress_hooks': [progress_hook],
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
-            }
-        }
-        
-        # Với YouTube (không phải TikTok), ta tận dụng bộ trích xuất chuẩn của yt-dlp
-        if not is_tiktok:
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': expected_ext,
-                'preferredquality': '192',
-            }]
-            ydl_opts['postprocessor_args'] = ['-threads', '1']
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            if is_tiktok:
+                q.put(f"data: [LOG] Kích hoạt TikTok Engine bóc tách âm thanh...\n\n")
+                output_filename = process_tiktok_download(url, expected_ext, is_audio_only=True)
+                q.put(f"DONE:{os.path.basename(output_filename)}")
+            else:
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
+                    'quiet': True,
+                    'no_warnings': True,
+                    'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
+                    'postprocessor_args': ['-threads', '1'],
+                    'progress_hooks': [progress_hook],
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': expected_ext,
+                        'preferredquality': '192',
+                    }],
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+                    }
+                }
                 q.put(f"data: [LOG] Đang chuyển đổi sang định dạng {expected_ext.upper()} (Chạy ngầm 1 luồng)...\n\n")
-                
-                info = ydl.extract_info(url, download=True)
-                final_filename = ydl.prepare_filename(info)
-                
-                # Nếu là TikTok, yt-dlp tải về file video thô, ta bắt buộc phải dùng FFmpeg bóc tách thủ công sang Audio
-                if is_tiktok and ffmpeg_exe:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    final_filename = ydl.prepare_filename(info)
                     output_filename = os.path.splitext(final_filename)[0] + f'.{expected_ext}'
-                    audio_codec = 'libmp3lame' if expected_ext == 'mp3' else 'aac'
-                    try:
-                        subprocess.run([
-                            ffmpeg_exe, '-y', '-i', final_filename,
-                            '-vn', '-acodec', audio_codec, '-b:a', '192k',
-                            '-threads', '1', output_filename
-                        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        
-                        if os.path.exists(final_filename) and final_filename != output_filename:
-                            os.remove(final_filename)
-                        final_filename = output_filename
-                    except subprocess.CalledProcessError:
-                        q.put(f"data: [LOG] Cảnh báo: Bóc tách thủ công gặp trở ngại, trả về tệp gốc...\n\n")
-
-                output_filename = os.path.splitext(final_filename)[0] + f'.{expected_ext}'
-                base_filename = os.path.basename(output_filename)
-
-                q.put(f"DONE:{base_filename}")
+                    q.put(f"DONE:{os.path.basename(output_filename)}")
         except Exception as e:
             q.put(f"ERROR:{str(e)}")
 
@@ -323,7 +282,6 @@ def download_audio():
         ping_count = 0
         while True:
             try:
-                # [BƠM OXY TƯỜNG LỬA] Đợi log tối đa 1 giây
                 msg = q.get(timeout=1)
                 if msg.startswith("DONE:"):
                     yield f"data: [PROGRESS] 100\n\ndata: [SUCCESS] {msg.split(':', 1)[1]}\n\n"
@@ -333,19 +291,13 @@ def download_audio():
                     break
                 else: yield msg
             except queue.Empty:
-                # Nhịp tim ngầm mỗi 1 giây để giữ kết nối SSE không bị ngắt
                 yield ":ping\n\n"
                 ping_count += 1
                 if ping_count >= 10:
                     yield f"data: [LOG] Đang xử lý Audio... (Vui lòng không đóng trang)\n\n"
                     ping_count = 0
 
-    # Bùa chú chống Cache và ép tường lửa xả bộ đệm liên tục
-    headers = {
-        'Cache-Control': 'no-cache, no-transform',
-        'X-Accel-Buffering': 'no',
-        'Connection': 'keep-alive'
-    }
+    headers = {'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'}
     return Response(generate_logs(), mimetype='text/event-stream', headers=headers)
 
 # Ngưỡng giới hạn ổ cứng cho phép: 100MB (vì ổ cứng trên Free tier rất nhỏ)
@@ -383,6 +335,191 @@ def check_and_cleanup_storage():
                     print(f"[Auto-Clean Error]: {ex}")
     except Exception as e:
         print(f"[Storage Check Error]: {e}")
+        
+def process_tiktok_download(url, expected_ext, is_audio_only=False):
+    """
+    TikTok Engine độc lập: Thực hiện chiến lược 3 giai đoạn dự phòng 
+    nhằm đảm bảo luôn lấy được video/audio hoàn chỉnh kèm theo kiểm định ffprobe.
+    """
+    ydl_opts_base = {
+        'quiet': True,
+        'no_warnings': True,
+        'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+        }
+    }
+
+    # Bước trích xuất danh sách formats để phân tích 3 nhóm
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts_base) as ydl:
+            info = ydl.extract_info(url, download=False)
+            formats = info.get('formats', [])
+    except Exception:
+        formats = []
+
+    # Phân loại 3 nhóm: muxed (có sẵn hình+tiếng), video-only, audio-only
+    muxed_list = []
+    v_only_list = []
+    a_only_list = []
+
+    for f in formats:
+        vcodec = f.get('vcodec', 'none')
+        acodec = f.get('acodec', 'none')
+        f_url = f.get('url')
+        if not f_url:
+            continue
+        
+        if vcodec != 'none' and acodec != 'none':
+            muxed_list.append(f)
+        elif vcodec != 'none' and acodec == 'none':
+            v_only_list.append(f)
+        elif vcodec == 'none' and acodec != 'none':
+            a_only_list.append(f)
+
+    # Sắp xếp ưu tiên độ phân giải hoặc bitrate cao nhất
+    muxed_list.sort(key=lambda x: x.get('height', 0) or 0, reverse=True)
+    v_only_list.sort(key=lambda x: x.get('height', 0) or 0, reverse=True)
+    a_only_list.sort(key=lambda x: x.get('abr', 0) or 0, reverse=True)
+
+    def has_audio_stream(file_path):
+        """Sử dụng ffprobe kiểm tra xem file có thực sự chứa luồng audio hay không"""
+        if not ffmpeg_exe:
+            return True # Nếu không có ffprobe thì mặc định chấp nhận
+        # Tìm ffprobe bằng đường dẫn tương ứng với ffmpeg_exe
+        ffprobe_exe = ffmpeg_exe.replace('ffmpeg', 'ffprobe')
+        if not os.path.exists(ffprobe_exe):
+            # Thử tìm trong hệ thống nếu không cùng thư mục
+            ffprobe_exe = shutil.which('ffprobe') or 'ffprobe'
+        
+        try:
+            cmd = [ffprobe_exe, '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_type', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            return 'audio' in result.stdout
+        except Exception:
+            return True # Tránh ngắt quãng nếu lỗi tiến trình phụ
+
+    downloaded_file = None
+
+    # --- CHỨC NĂNG TẢI AUDIO TIKTOK ---
+    if is_audio_only:
+        # Giai đoạn 1: Thử tải trực tiếp stream audio tốt nhất nếu có
+        if a_only_list:
+            best_audio_format = a_only_list[0]['format_id']
+            opts = dict(ydl_opts_base)
+            opts['format'] = best_audio_format
+            opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s')
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    inf = ydl.extract_info(url, download=True)
+                    downloaded_file = ydl.prepare_filename(inf)
+            except Exception:
+                pass
+
+        # Giai đoạn 2 (Fallback): Tải video gộp hoặc video-only rồi dùng ffmpeg bóc tách sang Audio
+        if not downloaded_file:
+            fallback_format = muxed_list[0]['format_id'] if muxed_list else 'best'
+            opts = dict(ydl_opts_base)
+            opts['format'] = fallback_format
+            opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s')
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    inf = ydl.extract_info(url, download=True)
+                    downloaded_file = ydl.prepare_filename(inf)
+            except Exception as e:
+                raise Exception(f"Không thể tải nguồn TikTok để bóc tách audio: {str(e)}")
+
+        # Tiến hành chuyển đổi sang định dạng Audio yêu cầu (mp3, m4a...) bằng FFmpeg thô
+        if downloaded_file and os.path.exists(downloaded_file):
+            output_audio = os.path.splitext(downloaded_file)[0] + f'.{expected_ext}'
+            audio_codec = 'libmp3lame' if expected_ext == 'mp3' else 'aac'
+            try:
+                subprocess.run([
+                    ffmpeg_exe, '-y', '-i', downloaded_file,
+                    '-vn', '-acodec', audio_codec, '-b:a', '192k',
+                    '-threads', '1', output_audio
+                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                if downloaded_file != output_audio and os.path.exists(downloaded_file):
+                    os.remove(downloaded_file)
+                return output_audio
+            except Exception as e:
+                raise Exception(f"Lỗi bóc tách audio TikTok: {str(e)}")
+        
+        raise Exception("Không thể hoàn tất tải audio TikTok.")
+
+    # --- CHỨC NĂNG TẢI VIDEO TIKTOK (Chiến lược 3 Giai đoạn) ---
+    # Giai đoạn 1: Ưu tiên chọn video muxed (có sẵn hình + tiếng) cao nhất
+    if muxed_list and not downloaded_file:
+        target_fmt = muxed_list[0]['format_id']
+        opts = dict(ydl_opts_base)
+        opts['format'] = target_fmt
+        opts['merge_output_format'] = expected_ext
+        opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s')
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                inf = ydl.extract_info(url, download=True)
+                temp_file = ydl.prepare_filename(inf)
+                base_ext_file = os.path.splitext(temp_file)[0] + f'.{expected_ext}'
+                if os.path.exists(base_ext_file):
+                    temp_file = base_ext_file
+                
+                if os.path.exists(temp_file) and has_audio_stream(temp_file):
+                    downloaded_file = temp_file
+        except Exception:
+            pass
+
+    # Giai đoạn 2: Nếu Giai đoạn 1 không thành công hoặc file thiếu tiếng, kết hợp video-only + audio-only
+    if not downloaded_file and v_only_list and a_only_list:
+        v_fmt = v_only_list[0]['format_id']
+        a_fmt = a_only_list[0]['format_id']
+        opts = dict(ydl_opts_base)
+        opts['format'] = f"{v_fmt}+{a_fmt}"
+        opts['merge_output_format'] = expected_ext
+        opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s')
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                inf = ydl.extract_info(url, download=True)
+                temp_file = ydl.prepare_filename(inf)
+                base_ext_file = os.path.splitext(temp_file)[0] + f'.{expected_ext}'
+                if os.path.exists(base_ext_file):
+                    temp_file = base_ext_file
+
+                if os.path.exists(temp_file) and has_audio_stream(temp_file):
+                    downloaded_file = temp_file
+        except Exception:
+            pass
+
+    # Giai đoạn 3: Fallback cuối cùng thử các chuỗi format dự phòng (bestvideo+bestaudio, best...)
+    if not downloaded_file:
+        fallbacks = ['bestvideo+bestaudio/best', 'bv*+ba/b', 'best']
+        for fb in fallbacks:
+            opts = dict(ydl_opts_base)
+            opts['format'] = fb
+            opts['merge_output_format'] = expected_ext
+            opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s')
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    inf = yt_dlp.YoutubeDL(opts).extract_info(url, download=True)
+                    temp_file = ydl.prepare_filename(inf)
+                    base_ext_file = os.path.splitext(temp_file)[0] + f'.{expected_ext}'
+                    if os.path.exists(base_ext_file):
+                        temp_file = base_ext_file
+
+                    if os.path.exists(temp_file):
+                        if has_audio_stream(temp_file):
+                            downloaded_file = temp_file
+                            break
+                        else:
+                            # Nếu tải về mà không có tiếng thì xóa đi để thử chuỗi tiếp theo
+                            os.remove(temp_file)
+            except Exception:
+                continue
+
+    if not downloaded_file or not os.path.exists(downloaded_file):
+        raise Exception("Không thể tải video TikTok có âm thanh sau khi thử mọi chiến lược dự phòng.")
+
+    return downloaded_file
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
