@@ -159,11 +159,32 @@ def download_video():
     def run_download_thread():
         check_and_cleanup_storage()
         is_tiktok = 'tiktok.com' in url or 'douyin.com' in url
+        is_facebook = 'facebook.com' in url or 'fb.watch' in url
 
         try:
             if is_tiktok:
                 output_filename = process_tiktok_download(url, expected_ext, is_audio_only=False)
                 q.put(f"DONE:{os.path.basename(output_filename)}")
+            elif is_facebook:
+                q.put(f"data: [LOG] Đang xử lý video Facebook...\n\n")
+                ydl_opts = {
+                    'format': 'best',
+                    'merge_output_format': expected_ext,
+                    'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
+                    'quiet': True,
+                    'no_warnings': True,
+                    'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
+                    'progress_hooks': [progress_hook],
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+                        'Accept-Language': 'en-us,en;q=0.5',
+                    }
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    filename = ydl.prepare_filename(info)
+                    output_filename = os.path.splitext(filename)[0] + f'.{expected_ext}'
+                    q.put(f"DONE:{os.path.basename(output_filename)}")
             else:
                 ydl_format = f"{format_id}+bestaudio/best" if format_id != 'best' else 'bestvideo+bestaudio/best'
                 ydl_opts = {
@@ -240,12 +261,49 @@ def download_audio():
 
     def run_download_thread():
         check_and_cleanup_storage()
+        
+        # Mở rộng nhận diện cho cả TikTok và Facebook
         is_tiktok = 'tiktok.com' in url or 'douyin.com' in url
+        is_facebook = 'facebook.com' in url or 'fb.watch' in url
+        is_social = is_tiktok or is_facebook
 
         try:
             if is_tiktok:
                 q.put(f"data: [LOG] Kích hoạt TikTok Engine bóc tách âm thanh...\n\n")
                 output_filename = process_tiktok_download(url, expected_ext, is_audio_only=True)
+                q.put(f"DONE:{os.path.basename(output_filename)}")
+            elif is_facebook:
+                q.put(f"data: [LOG] Kích hoạt cơ chế an toàn cho Facebook Audio...\n\n")
+                ydl_opts = {
+                    'format': 'best',
+                    'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
+                    'quiet': True,
+                    'no_warnings': True,
+                    'ffmpeg_location': ffmpeg_exe if ffmpeg_exe else None,
+                    'progress_hooks': [progress_hook],
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+                    }
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    final_filename = ydl.prepare_filename(info)
+                    
+                    # Bóc tách thủ công bằng FFmpeg thô tránh lỗi phân tích cú pháp audio của Facebook
+                    output_filename = os.path.splitext(final_filename)[0] + f'.{expected_ext}'
+                    audio_codec = 'libmp3lame' if expected_ext == 'mp3' else 'aac'
+                    try:
+                        subprocess.run([
+                            ffmpeg_exe, '-y', '-i', final_filename,
+                            '-vn', '-acodec', audio_codec, '-b:a', '192k',
+                            '-threads', '1', output_filename
+                        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        
+                        if os.path.exists(final_filename) and final_filename != output_filename:
+                            os.remove(final_filename)
+                    except subprocess.CalledProcessError:
+                        pass
+
                 q.put(f"DONE:{os.path.basename(output_filename)}")
             else:
                 ydl_opts = {
